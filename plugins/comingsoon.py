@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 TMDB_API_KEY = "90dde61a7cf8339a2cff5d805d5597a9"
 REMINDERS_FILE = "reminders.json"
+DEFAULT_POSTER = "https://via.placeholder.com/500x750/1a1a2e/eee?text=K-Drama"
 
 # Cache for drama data to avoid repeated API calls
 drama_cache = {}
@@ -39,6 +40,16 @@ def save_reminders(reminders):
 
 # Load existing reminders
 user_reminders = load_reminders()
+
+def is_valid_image_url(url: str) -> bool:
+    """Check if an image URL is accessible"""
+    if not url:
+        return False
+    try:
+        response = requests.head(url, timeout=5)
+        return response.status_code == 200 and 'image' in response.headers.get('content-type', '')
+    except:
+        return False
 
 def get_coming_soon(page=1) -> List[Dict]:
     """Fetch upcoming Korean dramas from TMDB"""
@@ -67,7 +78,7 @@ def get_coming_soon(page=1) -> List[Dict]:
             "title": item["name"],
             "release_date": item.get("first_air_date", "TBA"),
             "overview": item.get("overview", "No description available."),
-            "poster": f"https://image.tmdb.org/t/p/w500{item['poster_path']}" if item.get("poster_path") else None,
+            "poster": f"https://image.tmdb.org/t/p/w500{item['poster_path']}" if item.get("poster_path") else DEFAULT_POSTER,
             "vote_average": item.get("vote_average", 0),
             "genre_ids": item.get("genre_ids", [])
         }
@@ -98,7 +109,7 @@ def get_drama_details(drama_id: str) -> Optional[Dict]:
         "title": data["name"],
         "release_date": data.get("first_air_date", "TBA"),
         "overview": data.get("overview", "No description available."),
-        "poster": f"https://image.tmdb.org/t/p/w500{data['poster_path']}" if data.get("poster_path") else None,
+        "poster": f"https://image.tmdb.org/t/p/w500{data['poster_path']}" if data.get("poster_path") else DEFAULT_POSTER,
         "vote_average": data.get("vote_average", 0),
         "genres": [g["name"] for g in data.get("genres", [])],
         "networks": [n["name"] for n in data.get("networks", [])],
@@ -174,11 +185,10 @@ async def comingsoon_list(client, message):
         ]
         buttons.append(nav_buttons)
         
-        # Send with a default poster image so we can edit media later
-        await message.reply_photo(
-            photo="https://i.ibb.co/6NfYQ7c/kdrama.jpg",
-            caption="🎬 <b>Upcoming K-Dramas</b>\n\n"
-                   "Click on a drama to see detailed information, trailers, and set reminders!",
+        # Send as text message to avoid image loading issues
+        await message.reply_text(
+            "🎬 <b>Upcoming K-Dramas</b>\n\n"
+            "Click on a drama to see detailed information, trailers, and set reminders!",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML
         )
@@ -235,44 +245,50 @@ async def drama_details(client, query):
         buttons.append([InlineKeyboardButton("⬅️ Back to List", callback_data="refresh_list")])
         
         # Use poster if available, otherwise use default image
-        photo_url = drama_data.get("poster") or "https://i.ibb.co/6NfYQ7c/kdrama.jpg"
+        photo_url = drama_data.get("poster") or DEFAULT_POSTER
         
-        # Check if the current message has media
+        # Try to send photo with drama details
         try:
             if query.message.photo:
-                # If there's already a photo, edit the media
+                # Edit existing photo message
                 await query.message.edit_media(
                     media=InputMediaPhoto(photo_url, caption=caption, parse_mode=ParseMode.HTML),
                     reply_markup=InlineKeyboardMarkup(buttons)
                 )
             else:
-                # If no photo, delete the text message and send a new photo message
-                await query.message.delete()
-                await query.message.chat.send_photo(
+                # Current message is text, so send new photo message and delete old one
+                new_message = await client.send_photo(
+                    chat_id=query.message.chat.id,
                     photo=photo_url,
                     caption=caption,
                     reply_markup=InlineKeyboardMarkup(buttons),
                     parse_mode=ParseMode.HTML
                 )
-        except Exception as edit_error:
-            logger.error(f"Error editing media, trying alternative method: {edit_error}")
-            # Fallback: send new photo message
+                # Try to delete the old message
+                try:
+                    await query.message.delete()
+                except:
+                    pass  # Ignore if we can't delete
+        
+        except Exception as photo_error:
+            logger.error(f"Error with photo, falling back to text: {photo_error}")
+            # Fallback: edit message as text with poster link
+            caption_with_link = f"🖼️ [View Poster]({photo_url})\n\n{caption}"
             try:
-                await query.message.delete()
-                await query.message.chat.send_photo(
-                    photo=photo_url,
-                    caption=caption,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception as fallback_error:
-                logger.error(f"Fallback method failed: {fallback_error}")
-                # Last resort: send text with link to poster
-                caption_with_link = f"🖼️ [View Poster]({photo_url})\n\n{caption}"
                 await query.message.edit_text(
                     caption_with_link,
                     reply_markup=InlineKeyboardMarkup(buttons),
-                    parse_mode=ParseMode.MARKDOWN
+                    parse_mode=ParseMode.MARKDOWN,
+                    disable_web_page_preview=False
+                )
+            except Exception as text_error:
+                logger.error(f"Text fallback failed: {text_error}")
+                # Last resort - send new message
+                await client.send_message(
+                    chat_id=query.message.chat.id,
+                    text=caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML
                 )
         
         await query.answer()
@@ -362,37 +378,12 @@ async def refresh_list(client, query):
         ]
         buttons.append(nav_buttons)
         
-        try:
-            if query.message.photo:
-                # If current message has photo, edit the media
-                await query.message.edit_media(
-                    media=InputMediaPhoto(
-                        "https://i.ibb.co/6NfYQ7c/kdrama.jpg",
-                        caption="🎬 <b>Upcoming K-Dramas</b>\n\n"
-                               "Click on a drama to see detailed information, trailers, and set reminders!",
-                        parse_mode=ParseMode.HTML
-                    ),
-                    reply_markup=InlineKeyboardMarkup(buttons)
-                )
-            else:
-                # If current message is text, edit text
-                await query.message.edit_text(
-                    "🎬 <b>Upcoming K-Dramas</b>\n\n"
-                    "Click on a drama to see detailed information, trailers, and set reminders!",
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    parse_mode=ParseMode.HTML
-                )
-        except Exception as e:
-            logger.error(f"Error in refresh, sending new message: {e}")
-            await query.message.delete()
-            await query.message.chat.send_photo(
-                photo="https://i.ibb.co/6NfYQ7c/kdrama.jpg",
-                caption="🎬 <b>Upcoming K-Dramas</b>\n\n"
-                       "Click on a drama to see detailed information, trailers, and set reminders!",
-                reply_markup=InlineKeyboardMarkup(buttons),
-                parse_mode=ParseMode.HTML
-            )
-        
+        await query.message.edit_text(
+            "🎬 <b>Upcoming K-Dramas</b>\n\n"
+            "Click on a drama to see detailed information, trailers, and set reminders!",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode=ParseMode.HTML
+        )
         await query.answer("✅ List refreshed!")
         
     except Exception as e:

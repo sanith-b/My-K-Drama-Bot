@@ -174,9 +174,11 @@ async def comingsoon_list(client, message):
         ]
         buttons.append(nav_buttons)
         
-        await message.reply_text(
-            "🎬 <b>Upcoming K-Dramas</b>\n\n"
-            "Click on a drama to see detailed information, trailers, and set reminders!",
+        # Send with a default poster image so we can edit media later
+        await message.reply_photo(
+            photo="https://i.ibb.co/6NfYQ7c/kdrama.jpg",
+            caption="🎬 <b>Upcoming K-Dramas</b>\n\n"
+                   "Click on a drama to see detailed information, trailers, and set reminders!",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML
         )
@@ -235,10 +237,44 @@ async def drama_details(client, query):
         # Use poster if available, otherwise use default image
         photo_url = drama_data.get("poster") or "https://i.ibb.co/6NfYQ7c/kdrama.jpg"
         
-        await query.message.edit_media(
-            media=InputMediaPhoto(photo_url, caption=caption, parse_mode=ParseMode.HTML),
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        # Check if the current message has media
+        try:
+            if query.message.photo:
+                # If there's already a photo, edit the media
+                await query.message.edit_media(
+                    media=InputMediaPhoto(photo_url, caption=caption, parse_mode=ParseMode.HTML),
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            else:
+                # If no photo, delete the text message and send a new photo message
+                await query.message.delete()
+                await query.message.chat.send_photo(
+                    photo=photo_url,
+                    caption=caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML
+                )
+        except Exception as edit_error:
+            logger.error(f"Error editing media, trying alternative method: {edit_error}")
+            # Fallback: send new photo message
+            try:
+                await query.message.delete()
+                await query.message.chat.send_photo(
+                    photo=photo_url,
+                    caption=caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as fallback_error:
+                logger.error(f"Fallback method failed: {fallback_error}")
+                # Last resort: send text with link to poster
+                caption_with_link = f"🖼️ [View Poster]({photo_url})\n\n{caption}"
+                await query.message.edit_text(
+                    caption_with_link,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        
         await query.answer()
         
     except Exception as e:
@@ -326,12 +362,37 @@ async def refresh_list(client, query):
         ]
         buttons.append(nav_buttons)
         
-        await query.message.edit_text(
-            "🎬 <b>Upcoming K-Dramas</b>\n\n"
-            "Click on a drama to see detailed information, trailers, and set reminders!",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            if query.message.photo:
+                # If current message has photo, edit the media
+                await query.message.edit_media(
+                    media=InputMediaPhoto(
+                        "https://i.ibb.co/6NfYQ7c/kdrama.jpg",
+                        caption="🎬 <b>Upcoming K-Dramas</b>\n\n"
+                               "Click on a drama to see detailed information, trailers, and set reminders!",
+                        parse_mode=ParseMode.HTML
+                    ),
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            else:
+                # If current message is text, edit text
+                await query.message.edit_text(
+                    "🎬 <b>Upcoming K-Dramas</b>\n\n"
+                    "Click on a drama to see detailed information, trailers, and set reminders!",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML
+                )
+        except Exception as e:
+            logger.error(f"Error in refresh, sending new message: {e}")
+            await query.message.delete()
+            await query.message.chat.send_photo(
+                photo="https://i.ibb.co/6NfYQ7c/kdrama.jpg",
+                caption="🎬 <b>Upcoming K-Dramas</b>\n\n"
+                       "Click on a drama to see detailed information, trailers, and set reminders!",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode=ParseMode.HTML
+            )
+        
         await query.answer("✅ List refreshed!")
         
     except Exception as e:

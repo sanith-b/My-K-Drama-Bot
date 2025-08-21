@@ -5,6 +5,7 @@ import os
 from typing import List, Dict, Optional
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from pyrogram.enums import ParseMode
 import logging
 
 # Configure logging
@@ -177,7 +178,7 @@ async def comingsoon_list(client, message):
             "🎬 <b>Upcoming K-Dramas</b>\n\n"
             "Click on a drama to see detailed information, trailers, and set reminders!",
             reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="HTML"
+            parse_mode=ParseMode.HTML
         )
     except Exception as e:
         logger.error(f"Error in comingsoon_list: {e}")
@@ -235,7 +236,7 @@ async def drama_details(client, query):
         photo_url = drama_data.get("poster") or "https://i.ibb.co/6NfYQ7c/kdrama.jpg"
         
         await query.message.edit_media(
-            media=InputMediaPhoto(photo_url, caption=caption, parse_mode="HTML"),
+            media=InputMediaPhoto(photo_url, caption=caption, parse_mode=ParseMode.HTML),
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         await query.answer()
@@ -329,7 +330,7 @@ async def refresh_list(client, query):
             "🎬 <b>Upcoming K-Dramas</b>\n\n"
             "Click on a drama to see detailed information, trailers, and set reminders!",
             reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="HTML"
+            parse_mode=ParseMode.HTML
         )
         await query.answer("✅ List refreshed!")
         
@@ -362,7 +363,7 @@ async def show_user_reminders(client, query):
             "📋 <b>Your Reminders</b>\n\n"
             "Click on a drama to view details or manage your reminder:",
             reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="HTML"
+            parse_mode=ParseMode.HTML
         )
         await query.answer()
         
@@ -376,7 +377,7 @@ async def help_command(client, message):
     help_text = (
         "🎬 <b>K-Drama Bot Commands</b>\n\n"
         "🔸 /comingsoon or /upcoming - Show upcoming K-Dramas\n"
-        "🔸 /help or /start - Show this help message\n\n"
+        "🔸 /help - Show this help message\n\n"
         "<b>Features:</b>\n"
         "• View upcoming Korean dramas with release dates\n"
         "• Watch trailers directly from the bot\n"
@@ -386,4 +387,4 @@ async def help_command(client, message):
         "Just use /comingsoon to get started! 🌟"
     )
     
-    await message.reply_text(help_text, parse_mode="HTML")
+    await message.reply_text(help_text, parse_mode=ParseMode.HTML)

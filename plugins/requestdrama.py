@@ -7,6 +7,7 @@ from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 import re
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,8 +24,8 @@ requests_collection = db.drama_requests
 admins_collection = db.admins
 
 # Admin configuration - Add your admin user IDs here
-ADMIN_IDS = [1204352805]  # Replace with actual admin user IDs
-ADMIN_CHANNEL_ID = -1003028947753  # Replace with your admin channel/group ID (optional)
+ADMIN_IDS = 1204352805  # Replace with actual admin user IDs
+ADMIN_CHANNEL_ID = -1003028947753   # Replace with your admin channel/group ID (optional)
 
 # Request status constants
 STATUS_PENDING = "pending"
@@ -35,6 +36,11 @@ STATUS_PROCESSING = "processing"
 # User data storage for conversation flow
 user_states = {}
 USER_STATE_REQUESTING = "requesting_drama"
+USER_STATE_ADMIN_REPLY = "admin_reply"
+USER_STATE_SEARCH = "admin_search"
+
+# Add state expiration (5 minutes)
+STATE_EXPIRY = 300
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=None):
     """Safely edit a message, handling MESSAGE_NOT_MODIFIED errors"""
@@ -90,6 +96,10 @@ async def is_admin(user_id: int) -> bool:
 async def create_request(user_id: int, username: str, first_name: str, drama_name: str, description: str = "") -> str:
     """Create a new drama request"""
     try:
+        # Sanitize input to prevent injection attacks
+        drama_name = drama_name.strip()[:200]  # Limit length
+        description = description.strip()[:500] if description else ""
+        
         request_data = {
             "user_id": user_id,
             "username": username,
@@ -146,7 +156,7 @@ async def update_request_status(request_id: str, status: str, admin_id: int, adm
         }
         
         if admin_response:
-            update_data["admin_response"] = admin_response
+            update_data["admin_response"] = admin_response.strip()[:500]  # Sanitize and limit length
         
         result = await requests_collection.update_one(
             {"_id": ObjectId(request_id)},
@@ -167,6 +177,25 @@ async def get_request_by_id(request_id: str) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"Error getting request by ID: {e}")
         return None
+
+async def search_requests(query: str, limit: int = 10) -> List[Dict]:
+    """Search requests by drama name or description"""
+    try:
+        # Create a case-insensitive regex pattern
+        regex_pattern = re.compile(query, re.IGNORECASE)
+        
+        cursor = requests_collection.find({
+            "$or": [
+                {"drama_name": {"$regex": regex_pattern}},
+                {"description": {"$regex": regex_pattern}}
+            ]
+        }).sort("request_date", -1).limit(limit)
+        
+        requests = await cursor.to_list(length=limit)
+        return requests
+    except Exception as e:
+        logger.error(f"Error searching requests: {e}")
+        return []
 
 async def get_requests_stats() -> Dict:
     """Get request statistics"""
@@ -200,7 +229,22 @@ async def get_requests_stats() -> Dict:
         logger.error(f"Error getting stats: {e}")
         return {}
 
-@Client.on_message(filters.command(["request"]))
+def cleanup_expired_states():
+    """Clean up expired user states"""
+    current_time = time.time()
+    expired_users = []
+    
+    for user_id, state_data in user_states.items():
+        if current_time - state_data.get("timestamp", 0) > STATE_EXPIRY:
+            expired_users.append(user_id)
+    
+    for user_id in expired_users:
+        user_states.pop(user_id, None)
+    
+    if expired_users:
+        logger.info(f"Cleaned up {len(expired_users)} expired user states")
+
+@Client.on_message(filters.command(["start"]))
 async def start_command(client, message):
     """Start command with main menu"""
     try:
@@ -237,11 +281,14 @@ async def start_command(client, message):
         logger.error(f"Error in start command: {e}")
         await message.reply_text("❌ Something went wrong! Please try again.")
 
-@Client.on_message(filters.command(["hreq"]))
+@Client.on_message(filters.command(["request"]))
 async def request_command(client, message):
     """Direct request command"""
     user_id = message.from_user.id
-    user_states[user_id] = USER_STATE_REQUESTING
+    user_states[user_id] = {
+        "state": USER_STATE_REQUESTING,
+        "timestamp": time.time()
+    }
     
     instructions_text = (
         "🎭 <b>Request a K-Drama</b>\n\n"
@@ -261,7 +308,10 @@ async def request_command(client, message):
 async def request_drama_callback(client, query):
     """Handle request drama button"""
     user_id = query.from_user.id
-    user_states[user_id] = USER_STATE_REQUESTING
+    user_states[user_id] = {
+        "state": USER_STATE_REQUESTING,
+        "timestamp": time.time()
+    }
     
     instructions_text = (
         "🎭 <b>Request a K-Drama</b>\n\n"
@@ -283,9 +333,20 @@ async def handle_text_messages(client, message):
     """Handle text messages for drama requests"""
     user_id = message.from_user.id
     
+    # Clean up expired states first
+    cleanup_expired_states()
+    
     # Check if user is in requesting state
-    if user_states.get(user_id) != USER_STATE_REQUESTING:
-        return
+    if user_id in user_states and user_states[user_id]["state"] == USER_STATE_REQUESTING:
+        await handle_drama_request(client, message)
+    elif user_id in user_states and user_states[user_id]["state"] == USER_STATE_ADMIN_REPLY:
+        await handle_admin_reply(client, message)
+    elif user_id in user_states and user_states[user_id]["state"] == USER_STATE_SEARCH:
+        await handle_admin_search(client, message)
+
+async def handle_drama_request(client, message):
+    """Handle drama request submission"""
+    user_id = message.from_user.id
     
     try:
         user = message.from_user
@@ -357,6 +418,125 @@ async def handle_text_messages(client, message):
         await message.reply_text(
             "❌ Something went wrong! Please try again or contact support."
         )
+
+async def handle_admin_reply(client, message):
+    """Handle admin custom reply to a request"""
+    user_id = message.from_user.id
+    
+    if not await is_admin(user_id):
+        user_states.pop(user_id, None)
+        await message.reply_text("❌ Admin privileges required!")
+        return
+    
+    try:
+        request_id = user_states[user_id].get("request_id")
+        if not request_id:
+            await message.reply_text("❌ No request ID found in state!")
+            user_states.pop(user_id, None)
+            return
+        
+        # Get request details
+        request_data = await get_request_by_id(request_id)
+        if not request_data:
+            await message.reply_text("❌ Request not found!")
+            user_states.pop(user_id, None)
+            return
+        
+        # Update request with custom response
+        admin_response = message.text.strip()
+        success = await update_request_status(
+            request_id, 
+            request_data["status"],  # Keep the same status
+            user_id, 
+            admin_response
+        )
+        
+        if success:
+            # Notify the user who made the request
+            try:
+                user_msg = (
+                    f"💬 <b>Update on your drama request</b>\n\n"
+                    f"🎭 <b>Drama:</b> {request_data['drama_name']}\n"
+                    f"📝 <b>Admin Response:</b> {admin_response}\n\n"
+                    f"Thank you for using our service!"
+                )
+                
+                await client.send_message(
+                    chat_id=request_data["user_id"],
+                    text=user_msg,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify user: {e}")
+                await message.reply_text("✅ Response saved but failed to notify user!")
+            else:
+                await message.reply_text("✅ Custom response sent to user!")
+        else:
+            await message.reply_text("❌ Error saving response!")
+        
+        # Clear the admin's state
+        user_states.pop(user_id, None)
+        
+    except Exception as e:
+        logger.error(f"Error handling admin reply: {e}")
+        await message.reply_text("❌ Error processing custom reply!")
+        user_states.pop(user_id, None)
+
+async def handle_admin_search(client, message):
+    """Handle admin search query"""
+    user_id = message.from_user.id
+    
+    if not await is_admin(user_id):
+        user_states.pop(user_id, None)
+        await message.reply_text("❌ Admin privileges required!")
+        return
+    
+    try:
+        search_query = message.text.strip()
+        if not search_query or len(search_query) < 2:
+            await message.reply_text("❌ Please provide a search term (at least 2 characters)")
+            user_states.pop(user_id, None)
+            return
+        
+        # Search for requests
+        results = await search_requests(search_query, limit=10)
+        
+        if not results:
+            await message.reply_text("❌ No requests found matching your search!")
+            user_states.pop(user_id, None)
+            return
+        
+        # Format results
+        results_text = f"🔍 <b>Search Results for '{search_query}'</b>\n\n"
+        
+        for i, request in enumerate(results, 1):
+            req_id = str(request["_id"])[-8:]
+            user_name = request["first_name"]
+            drama = request["drama_name"]
+            status = request["status"]
+            date = request["request_date"].strftime("%Y-%m-%d")
+            
+            status_emoji = {
+                STATUS_PENDING: "⏳",
+                STATUS_APPROVED: "✅", 
+                STATUS_REJECTED: "❌",
+                STATUS_PROCESSING: "🔄"
+            }.get(status, "❓")
+            
+            results_text += (
+                f"{i}. {status_emoji} <b>#{req_id}</b> - {drama}\n"
+                f"   👤 {user_name} | 📅 {date}\n\n"
+            )
+        
+        await message.reply_text(results_text, parse_mode=ParseMode.HTML)
+        
+        # Clear the search state
+        user_states.pop(user_id, None)
+        
+    except Exception as e:
+        logger.error(f"Error handling admin search: {e}")
+        await message.reply_text("❌ Error processing search!")
+        user_states.pop(user_id, None)
 
 async def notify_admins(client, request_id: str, user, drama_name: str, description: str):
     """Notify admins about new request"""
@@ -678,140 +858,60 @@ async def handle_admin_actions(client, query):
         logger.error(f"Error handling admin action: {e}")
         await query.answer("❌ Error processing request!", show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^help_info$"))
-async def show_help(client, query):
-    """Show help information"""
-    # Add timestamp to ensure content is different
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+@Client.on_callback_query(filters.regex(r"^admin_reply_"))
+async def handle_admin_reply_callback(client, query):
+    """Handle admin custom reply callback"""
+    if not await is_admin(query.from_user.id):
+        await query.answer("❌ Access denied!", show_alert=True)
+        return
     
-    help_text = (
-        "ℹ️ <b>K-Drama Request Bot Help</b>\n\n"
-        "🎭 <b>How to Request:</b>\n"
-        "1. Click 'Request Drama' button\n"
-        "2. Send drama name and details\n"
-        "3. Wait for admin review\n"
-        "4. Get notified of the result\n\n"
-        "📋 <b>Request Status:</b>\n"
-        "• ⏳ Pending - Under review\n"
-        "• 🔄 Processing - Being worked on\n"
-        "• ✅ Approved - Will be uploaded\n"
-        "• ❌ Rejected - Cannot fulfill\n\n"
-        "💡 <b>Tips for Better Requests:</b>\n"
-        "• Be specific with drama names\n"
-        "• Include release year if known\n"
-        "• Mention main actors if helpful\n"
-        "• Provide English and Korean titles\n"
-        "• Be patient for admin response\n\n"
-        "📞 <b>Commands:</b>\n"
-        "• /start - Main menu\n"
-        "• /request - Quick request\n"
-        "• /help - This help message\n\n"
-        f"<i>Last updated: {timestamp}</i>"
-    )
-    
-    buttons = [
-        [InlineKeyboardButton("🎭 Request Drama Now", callback_data="request_drama")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
-    ]
-    
-    await safe_edit_message(
-        query.message,
-        help_text,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=ParseMode.HTML
-    )
-    await query.answer()
-
-@Client.on_callback_query(filters.regex(r"^main_menu$"))
-async def main_menu(client, query):
-    """Return to main menu with MESSAGE_NOT_MODIFIED handling"""
     try:
-        # Clear any user states
-        user_states.pop(query.from_user.id, None)
+        request_id = query.data.split("_")[2]
         
-        user_id = query.from_user.id
-        first_name = query.from_user.first_name or "User"
+        # Verify request exists
+        request_data = await get_request_by_id(request_id)
+        if not request_data:
+            await query.answer("❌ Request not found!", show_alert=True)
+            return
         
-        buttons = [
-            [InlineKeyboardButton("🎭 Request Drama", callback_data="request_drama")],
-            [InlineKeyboardButton("📋 My Requests", callback_data="my_requests")],
-            [InlineKeyboardButton("ℹ️ Help", callback_data="help_info")]
-        ]
+        # Set admin state for custom reply
+        user_states[query.from_user.id] = {
+            "state": USER_STATE_ADMIN_REPLY,
+            "request_id": request_id,
+            "timestamp": time.time()
+        }
         
-        # Add admin panel for admins
-        if await is_admin(user_id):
-            buttons.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
-        
-        # Add timestamp to ensure content is different
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        welcome_text = (
-            f"🎬 <b>Welcome to K-Drama Request Bot, {first_name}!</b>\n\n"
-            "Can't find your favorite K-Drama in our collection? "
-            "Request it from our admins and we'll try to add it!\n\n"
-            "Choose an option below to get started:\n"
-            f"<i>Last updated: {timestamp}</i>"
-        )
-        
-        was_modified = await safe_edit_message(
+        await safe_edit_message(
             query.message,
-            welcome_text,
-            reply_markup=InlineKeyboardMarkup(buttons),
+            "💬 <b>Send Custom Reply</b>\n\n"
+            f"Request: {request_data['drama_name']}\n"
+            f"User: {request_data['first_name']}\n\n"
+            "Please type your custom response to send to the user:",
             parse_mode=ParseMode.HTML
         )
         
-        if not was_modified:
-            await query.answer("✅ Menu is already up to date!")
-        else:
-            await query.answer()
-            
+        await query.answer()
+        
     except Exception as e:
-        if not await handle_callback_error(query, e):
-            logger.error(f"Error in main menu: {e}")
+        logger.error(f"Error handling admin reply callback: {e}")
+        await query.answer("❌ Error processing request!", show_alert=True)
 
-@Client.on_message(filters.command(["statsreq"]) & filters.user(ADMIN_IDS))
-async def admin_stats_command(client, message):
-    """Show detailed statistics (admin only)"""
+@Client.on_callback_query(filters.regex(r"^admin_search$"))
+async def handle_admin_search_callback(client, query):
+    """Handle admin search callback"""
+    if not await is_admin(query.from_user.id):
+        await query.answer("❌ Access denied!", show_alert=True)
+        return
+    
     try:
-        stats = await get_requests_stats()
+        # Set admin state for search
+        user_states[query.from_user.id] = {
+            "state": USER_STATE_SEARCH,
+            "timestamp": time.time()
+        }
         
-        # Get recent activity
-        recent_requests = await requests_collection.find().sort("request_date", -1).limit(5).to_list(length=5)
-        
-        # Add timestamp to ensure content is different
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        stats_text = (
-            f"📊 <b>Detailed Statistics</b> - Updated: {timestamp}\n\n"
-            f"👥 <b>Users & Requests:</b>\n"
-            f"• Total Requests: {stats.get('total', 0)}\n"
-            f"• Unique Users: {stats.get('unique_users', 0)}\n\n"
-            f"📋 <b>Request Status:</b>\n"
-            f"• ⏳ Pending: {stats.get('pending', 0)}\n"
-            f"• 🔄 Processing: {stats.get('processing', 0)}\n"
-            f"• ✅ Approved: {stats.get('approved', 0)}\n"
-            f"• ❌ Rejected: {stats.get('rejected', 0)}\n\n"
-        )
-        
-        if recent_requests:
-            stats_text += "🕒 <b>Recent Activity:</b>\n"
-            for req in recent_requests:
-                date = req["request_date"].strftime("%m-%d")
-                status_emoji = {
-                    STATUS_PENDING: "⏳",
-                    STATUS_APPROVED: "✅",
-                    STATUS_REJECTED: "❌",
-                    STATUS_PROCESSING: "🔄"
-                }.get(req["status"], "❓")
-                
-                stats_text += f"{status_emoji} {req['drama_name'][:20]}... ({date})\n"
-        
-        await message.reply_text(stats_text, parse_mode=ParseMode.HTML)
-        
-    except Exception as e:
-        logger.error(f"Error showing stats: {e}")
-        await message.reply_text("❌ Error retrieving statistics!")
-
-# Initialize admin database on startup
-asyncio.create_task(init_admin_db())
-
-logger.info("K-Drama Request Bot handlers loaded successfully!")
+        await safe_edit_message(
+            query.message,
+            "🔍 <b>Search Requests</b>\n\n"
+            "Please type your search query to find drama requests.\n"
+            "You can search by drama name or description:",

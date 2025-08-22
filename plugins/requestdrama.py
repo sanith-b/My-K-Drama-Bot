@@ -6,6 +6,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,13 +24,45 @@ admins_collection = db.admins
 
 # Admin configuration - Add your admin user IDs here
 ADMIN_IDS = [1204352805]  # Replace with actual admin user IDs
-ADMIN_CHANNEL_ID = -1003028947753   # Replace with your admin channel/group ID (optional)
+ADMIN_CHANNEL_ID = -1003028947753  # Replace with your admin channel/group ID (optional)
 
 # Request status constants
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved" 
 STATUS_REJECTED = "rejected"
 STATUS_PROCESSING = "processing"
+
+# User data storage for conversation flow
+user_states = {}
+USER_STATE_REQUESTING = "requesting_drama"
+
+async def safe_edit_message(message, text, reply_markup=None, parse_mode=None):
+    """Safely edit a message, handling MESSAGE_NOT_MODIFIED errors"""
+    try:
+        await message.edit_text(
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+        return True
+    except Exception as e:
+        if "MESSAGE_NOT_MODIFIED" in str(e):
+            return False  # Message wasn't modified, but that's okay
+        else:
+            raise e  # Re-raise other errors
+
+async def handle_callback_error(callback, error):
+    """Handle callback errors globally"""
+    if "MESSAGE_NOT_MODIFIED" in str(error):
+        await callback.answer("✅ Content is already up to date!")
+        return True
+    elif "QUERY_ID_INVALID" in str(error):
+        # Query too old, just ignore
+        return True
+    else:
+        logger.error(f"Callback error: {error}")
+        await callback.answer("❌ An error occurred!", show_alert=True)
+        return False
 
 async def init_admin_db():
     """Initialize admin database with predefined admin IDs"""
@@ -105,6 +138,7 @@ async def get_pending_requests(limit: int = 20) -> List[Dict]:
 async def update_request_status(request_id: str, status: str, admin_id: int, admin_response: str = None) -> bool:
     """Update request status"""
     try:
+        from bson import ObjectId
         update_data = {
             "status": status,
             "admin_id": admin_id,
@@ -115,7 +149,7 @@ async def update_request_status(request_id: str, status: str, admin_id: int, adm
             update_data["admin_response"] = admin_response
         
         result = await requests_collection.update_one(
-            {"_id": request_id},
+            {"_id": ObjectId(request_id)},
             {"$set": update_data}
         )
         
@@ -166,10 +200,6 @@ async def get_requests_stats() -> Dict:
         logger.error(f"Error getting stats: {e}")
         return {}
 
-# User data storage for conversation flow
-user_states = {}
-USER_STATE_REQUESTING = "requesting_drama"
-
 @Client.on_message(filters.command(["request"]))
 async def start_command(client, message):
     """Start command with main menu"""
@@ -187,11 +217,14 @@ async def start_command(client, message):
         if await is_admin(user_id):
             buttons.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
         
+        # Add timestamp to ensure content is different
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         welcome_text = (
             f"🎬 <b>Welcome to K-Drama Request Bot, {first_name}!</b>\n\n"
             "Can't find your favorite K-Drama in our collection? "
             "Request it from our admins and we'll try to add it!\n\n"
-            "Choose an option below to get started:"
+            "Choose an option below to get started:\n"
+            f"<i>Last updated: {timestamp}</i>"
         )
         
         await message.reply_text(
@@ -242,7 +275,7 @@ async def request_drama_callback(client, query):
         "Send your request now:"
     )
     
-    await query.message.edit_text(instructions_text, parse_mode=ParseMode.HTML)
+    await safe_edit_message(query.message, instructions_text, parse_mode=ParseMode.HTML)
     await query.answer()
 
 @Client.on_message(filters.text & ~filters.command([""]))
@@ -378,7 +411,7 @@ async def notify_admins(client, request_id: str, user, drama_name: str, descript
 
 @Client.on_callback_query(filters.regex(r"^my_requests$"))
 async def show_user_requests(client, query):
-    """Show user's requests"""
+    """Show user's requests with MESSAGE_NOT_MODIFIED handling"""
     try:
         user_id = query.from_user.id
         requests = await get_user_requests(user_id)
@@ -395,7 +428,8 @@ async def show_user_requests(client, query):
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
             ]
             
-            await query.message.edit_text(
+            await safe_edit_message(
+                query.message,
                 no_requests_text,
                 reply_markup=InlineKeyboardMarkup(buttons),
                 parse_mode=ParseMode.HTML
@@ -434,26 +468,35 @@ async def show_user_requests(client, query):
             [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
         ]
         
-        await query.message.edit_text(
+        # Use safe edit to handle MESSAGE_NOT_MODIFIED
+        was_modified = await safe_edit_message(
+            query.message,
             requests_text,
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML
         )
-        await query.answer()
+        
+        if not was_modified:
+            await query.answer("✅ List is already up to date!")
+        else:
+            await query.answer()
         
     except Exception as e:
-        logger.error(f"Error showing user requests: {e}")
-        await query.answer("❌ Error loading your requests!", show_alert=True)
+        if not await handle_callback_error(query, e):
+            logger.error(f"Error showing user requests: {e}")
 
 @Client.on_callback_query(filters.regex(r"^admin_panel$"))
 async def admin_panel(client, query):
-    """Show admin panel"""
+    """Show admin panel with timestamp to prevent MESSAGE_NOT_MODIFIED"""
     if not await is_admin(query.from_user.id):
         await query.answer("❌ You don't have admin permissions!", show_alert=True)
         return
     
     try:
         stats = await get_requests_stats()
+        
+        # Add timestamp to ensure content is always different
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         
         panel_text = (
             "🛠 <b>Admin Panel</b>\n\n"
@@ -464,6 +507,7 @@ async def admin_panel(client, query):
             f"• ✅ Approved: {stats.get('approved', 0)}\n"
             f"• ❌ Rejected: {stats.get('rejected', 0)}\n"
             f"• 🔄 Processing: {stats.get('processing', 0)}\n"
+            f"\n🕒 <i>Last updated: {timestamp}</i>"
         )
         
         buttons = [
@@ -473,7 +517,8 @@ async def admin_panel(client, query):
             [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
         ]
         
-        await query.message.edit_text(
+        await safe_edit_message(
+            query.message,
             panel_text,
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML
@@ -481,8 +526,8 @@ async def admin_panel(client, query):
         await query.answer()
         
     except Exception as e:
-        logger.error(f"Error showing admin panel: {e}")
-        await query.answer("❌ Error loading admin panel!", show_alert=True)
+        if not await handle_callback_error(query, e):
+            logger.error(f"Error showing admin panel: {e}")
 
 @Client.on_callback_query(filters.regex(r"^admin_pending_list$"))
 async def show_pending_requests(client, query):
@@ -495,9 +540,9 @@ async def show_pending_requests(client, query):
         pending_requests = await get_pending_requests(10)
         
         if not pending_requests:
-            await query.message.edit_text(
-                "✅ <b>No Pending Requests</b>\n\n"
-                "All requests have been processed!",
+            await safe_edit_message(
+                query.message,
+                "✅ <b>No Pending Requests</b>\n\nAll requests have been processed!",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")]
                 ]),
@@ -506,7 +551,9 @@ async def show_pending_requests(client, query):
             await query.answer()
             return
         
-        pending_text = "⏳ <b>Pending Requests</b>\n\n"
+        # Add timestamp to ensure content is different
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        pending_text = f"⏳ <b>Pending Requests</b> - Updated: {timestamp}\n\n"
         
         for request in pending_requests:
             req_id = str(request["_id"])[-8:]
@@ -527,16 +574,21 @@ async def show_pending_requests(client, query):
             [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")]
         ]
         
-        await query.message.edit_text(
+        was_modified = await safe_edit_message(
+            query.message,
             pending_text,
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML
         )
-        await query.answer()
+        
+        if not was_modified:
+            await query.answer("✅ List is already up to date!")
+        else:
+            await query.answer()
         
     except Exception as e:
-        logger.error(f"Error showing pending requests: {e}")
-        await query.answer("❌ Error loading pending requests!", show_alert=True)
+        if not await handle_callback_error(query, e):
+            logger.error(f"Error showing pending requests: {e}")
 
 @Client.on_callback_query(filters.regex(r"^admin_(approve|reject|process)_"))
 async def handle_admin_actions(client, query):
@@ -606,6 +658,19 @@ async def handle_admin_actions(client, query):
                 logger.error(f"Failed to notify user {user_id}: {e}")
             
             await query.answer(success_msg, show_alert=True)
+            
+            # Update the admin message to show it's been processed
+            try:
+                # Try to edit the original admin message to show it's been processed
+                processed_text = query.message.text + f"\n\n✅ Processed by {query.from_user.first_name} at {datetime.datetime.now().strftime('%H:%M:%S')}"
+                await safe_edit_message(
+                    query.message,
+                    processed_text,
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass  # If we can't edit the message, it's not critical
+            
         else:
             await query.answer("❌ Error updating request status!", show_alert=True)
         
@@ -616,6 +681,9 @@ async def handle_admin_actions(client, query):
 @Client.on_callback_query(filters.regex(r"^help_info$"))
 async def show_help(client, query):
     """Show help information"""
+    # Add timestamp to ensure content is different
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    
     help_text = (
         "ℹ️ <b>K-Drama Request Bot Help</b>\n\n"
         "🎭 <b>How to Request:</b>\n"
@@ -637,7 +705,8 @@ async def show_help(client, query):
         "📞 <b>Commands:</b>\n"
         "• /start - Main menu\n"
         "• /request - Quick request\n"
-        "• /help - This help message"
+        "• /help - This help message\n\n"
+        f"<i>Last updated: {timestamp}</i>"
     )
     
     buttons = [
@@ -645,7 +714,8 @@ async def show_help(client, query):
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
     ]
     
-    await query.message.edit_text(
+    await safe_edit_message(
+        query.message,
         help_text,
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode=ParseMode.HTML
@@ -654,15 +724,51 @@ async def show_help(client, query):
 
 @Client.on_callback_query(filters.regex(r"^main_menu$"))
 async def main_menu(client, query):
-    """Return to main menu"""
-    # Clear any user states
-    user_states.pop(query.from_user.id, None)
-    
-    # Call start command functionality
-    await start_command(client, query.message)
-    await query.answer()
+    """Return to main menu with MESSAGE_NOT_MODIFIED handling"""
+    try:
+        # Clear any user states
+        user_states.pop(query.from_user.id, None)
+        
+        user_id = query.from_user.id
+        first_name = query.from_user.first_name or "User"
+        
+        buttons = [
+            [InlineKeyboardButton("🎭 Request Drama", callback_data="request_drama")],
+            [InlineKeyboardButton("📋 My Requests", callback_data="my_requests")],
+            [InlineKeyboardButton("ℹ️ Help", callback_data="help_info")]
+        ]
+        
+        # Add admin panel for admins
+        if await is_admin(user_id):
+            buttons.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
+        
+        # Add timestamp to ensure content is different
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        welcome_text = (
+            f"🎬 <b>Welcome to K-Drama Request Bot, {first_name}!</b>\n\n"
+            "Can't find your favorite K-Drama in our collection? "
+            "Request it from our admins and we'll try to add it!\n\n"
+            "Choose an option below to get started:\n"
+            f"<i>Last updated: {timestamp}</i>"
+        )
+        
+        was_modified = await safe_edit_message(
+            query.message,
+            welcome_text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode=ParseMode.HTML
+        )
+        
+        if not was_modified:
+            await query.answer("✅ Menu is already up to date!")
+        else:
+            await query.answer()
+            
+    except Exception as e:
+        if not await handle_callback_error(query, e):
+            logger.error(f"Error in main menu: {e}")
 
-@Client.on_message(filters.command(["stats"]) & filters.user(ADMIN_IDS))
+@Client.on_message(filters.command(["statsreq"]) & filters.user(ADMIN_IDS))
 async def admin_stats_command(client, message):
     """Show detailed statistics (admin only)"""
     try:
@@ -671,8 +777,11 @@ async def admin_stats_command(client, message):
         # Get recent activity
         recent_requests = await requests_collection.find().sort("request_date", -1).limit(5).to_list(length=5)
         
+        # Add timestamp to ensure content is different
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        
         stats_text = (
-            f"📊 <b>Detailed Statistics</b>\n\n"
+            f"📊 <b>Detailed Statistics</b> - Updated: {timestamp}\n\n"
             f"👥 <b>Users & Requests:</b>\n"
             f"• Total Requests: {stats.get('total', 0)}\n"
             f"• Unique Users: {stats.get('unique_users', 0)}\n\n"

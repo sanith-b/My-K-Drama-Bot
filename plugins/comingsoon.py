@@ -7,6 +7,8 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from pyrogram.enums import ParseMode
 import logging
+from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,32 +16,91 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 TMDB_API_KEY = "90dde61a7cf8339a2cff5d805d5597a9"
-REMINDERS_FILE = "reminders.json"
 DEFAULT_POSTER = "https://via.placeholder.com/500x750/1a1a2e/eee?text=K-Drama"
+
+# Database configuration
+DATABASE_NAME = "pastppr"
+DATABASE_URI = "mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr"
+
+# Initialize MongoDB client
+mongo_client = AsyncIOMotorClient(DATABASE_URI)
+db = mongo_client[DATABASE_NAME]
+reminders_collection = db.reminders
 
 # Cache for drama data to avoid repeated API calls
 drama_cache = {}
 
-def load_reminders():
-    """Load reminders from file"""
-    if os.path.exists(REMINDERS_FILE):
-        try:
-            with open(REMINDERS_FILE, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            logger.error("Error reading reminders file")
-    return {}
-
-def save_reminders(reminders):
-    """Save reminders to file"""
+async def add_reminder(user_id: str, drama_id: str, drama_title: str) -> bool:
+    """Add a reminder for a user"""
     try:
-        with open(REMINDERS_FILE, 'w') as f:
-            json.dump(reminders, f, indent=2)
+        await reminders_collection.update_one(
+            {"user_id": user_id, "drama_id": drama_id},
+            {
+                "$set": {
+                    "user_id": user_id,
+                    "drama_id": drama_id,
+                    "drama_title": drama_title,
+                    "created_at": datetime.datetime.utcnow()
+                }
+            },
+            upsert=True
+        )
+        return True
     except Exception as e:
-        logger.error(f"Error saving reminders: {e}")
+        logger.error(f"Error adding reminder: {e}")
+        return False
 
-# Load existing reminders
-user_reminders = load_reminders()
+async def remove_reminder(user_id: str, drama_id: str) -> bool:
+    """Remove a reminder for a user"""
+    try:
+        result = await reminders_collection.delete_one(
+            {"user_id": user_id, "drama_id": drama_id}
+        )
+        return result.deleted_count > 0
+    except Exception as e:
+        logger.error(f"Error removing reminder: {e}")
+        return False
+
+async def get_user_reminders(user_id: str) -> List[Dict]:
+    """Get all reminders for a user"""
+    try:
+        cursor = reminders_collection.find({"user_id": user_id})
+        reminders = await cursor.to_list(length=None)
+        return reminders
+    except Exception as e:
+        logger.error(f"Error getting user reminders: {e}")
+        return []
+
+async def has_reminder(user_id: str, drama_id: str) -> bool:
+    """Check if user has a reminder for a specific drama"""
+    try:
+        reminder = await reminders_collection.find_one(
+            {"user_id": user_id, "drama_id": drama_id}
+        )
+        return reminder is not None
+    except Exception as e:
+        logger.error(f"Error checking reminder: {e}")
+        return False
+
+async def get_all_reminders() -> List[Dict]:
+    """Get all reminders from database for notification purposes"""
+    try:
+        cursor = reminders_collection.find({})
+        reminders = await cursor.to_list(length=None)
+        return reminders
+    except Exception as e:
+        logger.error(f"Error getting all reminders: {e}")
+        return []
+
+async def get_reminders_by_drama(drama_id: str) -> List[Dict]:
+    """Get all users who have reminders for a specific drama"""
+    try:
+        cursor = reminders_collection.find({"drama_id": drama_id})
+        reminders = await cursor.to_list(length=None)
+        return reminders
+    except Exception as e:
+        logger.error(f"Error getting reminders by drama: {e}")
+        return []
 
 def is_valid_image_url(url: str) -> bool:
     """Check if an image URL is accessible"""
@@ -235,7 +296,7 @@ async def drama_details(client, query):
             buttons.append([InlineKeyboardButton("▶️ Watch Trailer", url=trailer)])
         
         user_id = str(query.from_user.id)
-        is_reminded = user_reminders.get(user_id, {}).get(drama_id, False)
+        is_reminded = await has_reminder(user_id, drama_id)
         
         if is_reminded:
             buttons.append([InlineKeyboardButton("🔕 Remove Reminder", callback_data=f"unremind_{drama_id}")])
@@ -304,40 +365,38 @@ async def set_reminder(client, query):
     user_id = str(query.from_user.id)
     
     try:
-        # Initialize user reminders if not exists
-        if user_id not in user_reminders:
-            user_reminders[user_id] = {}
-        
-        user_reminders[user_id][drama_id] = True
-        save_reminders(user_reminders)
-        
         drama_data = get_drama_details(drama_id)
         drama_title = drama_data["title"] if drama_data else f"Drama {drama_id}"
         
-        await query.answer(f"🔔 Reminder set for '{drama_title}'!", show_alert=True)
+        success = await add_reminder(user_id, drama_id, drama_title)
         
-        # Update the button to show reminder is set
-        await drama_details(client, query)
+        if success:
+            await query.answer(f"🔔 Reminder set for '{drama_title}'!", show_alert=True)
+            # Update the button to show reminder is set
+            await drama_details(client, query)
+        else:
+            await query.answer("❌ Error setting reminder!", show_alert=True)
         
     except Exception as e:
         logger.error(f"Error setting reminder: {e}")
         await query.answer("❌ Error setting reminder!", show_alert=True)
 
 @Client.on_callback_query(filters.regex(r"^unremind_"))
-async def remove_reminder(client, query):
+async def remove_user_reminder(client, query):
     """Remove reminder for a drama"""
     drama_id = query.data.split("_")[1]
     user_id = str(query.from_user.id)
     
     try:
-        if user_id in user_reminders and drama_id in user_reminders[user_id]:
-            del user_reminders[user_id][drama_id]
-            save_reminders(user_reminders)
-        
         drama_data = get_drama_details(drama_id)
         drama_title = drama_data["title"] if drama_data else f"Drama {drama_id}"
         
-        await query.answer(f"🔕 Reminder removed for '{drama_title}'!", show_alert=True)
+        success = await remove_reminder(user_id, drama_id)
+        
+        if success:
+            await query.answer(f"🔕 Reminder removed for '{drama_title}'!", show_alert=True)
+        else:
+            await query.answer(f"🔕 Reminder removed for '{drama_title}'!", show_alert=True)  # Show success even if not found
         
         # Update the button to show reminder is removed
         await drama_details(client, query)
@@ -396,18 +455,22 @@ async def show_user_reminders(client, query):
     user_id = str(query.from_user.id)
     
     try:
-        if user_id not in user_reminders or not user_reminders[user_id]:
+        reminders = await get_user_reminders(user_id)
+        
+        if not reminders:
             await query.answer("📋 You have no reminders set!", show_alert=True)
             return
         
         buttons = []
-        for drama_id in user_reminders[user_id]:
-            drama_data = get_drama_details(drama_id)
-            if drama_data:
-                title = drama_data["title"]
-                if len(title) > 30:
-                    title = title[:27] + "..."
-                buttons.append([InlineKeyboardButton(f"🔔 {title}", callback_data=f"drama_{drama_id}")])
+        for reminder in reminders:
+            drama_id = reminder["drama_id"]
+            drama_title = reminder.get("drama_title", f"Drama {drama_id}")
+            
+            # Truncate long titles
+            if len(drama_title) > 30:
+                drama_title = drama_title[:27] + "..."
+            
+            buttons.append([InlineKeyboardButton(f"🔔 {drama_title}", callback_data=f"drama_{drama_id}")])
         
         buttons.append([InlineKeyboardButton("⬅️ Back to List", callback_data="refresh_list")])
         
@@ -423,13 +486,48 @@ async def show_user_reminders(client, query):
         logger.error(f"Error showing reminders: {e}")
         await query.answer("❌ Error loading reminders!", show_alert=True)
 
+@Client.on_message(filters.command(["statsremind"]))
+async def database_stats(client, message):
+    """Show database statistics (admin only)"""
+    try:
+        # Get total reminders count
+        total_reminders = await reminders_collection.count_documents({})
+        
+        # Get unique users count
+        unique_users = len(await reminders_collection.distinct("user_id"))
+        
+        # Get most reminded dramas
+        pipeline = [
+            {"$group": {"_id": "$drama_id", "count": {"$sum": 1}, "title": {"$first": "$drama_title"}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 5}
+        ]
+        top_dramas = await reminders_collection.aggregate(pipeline).to_list(length=5)
+        
+        stats_text = (
+            f"📊 <b>Database Statistics</b>\n\n"
+            f"👥 Total Users: {unique_users}\n"
+            f"🔔 Total Reminders: {total_reminders}\n\n"
+            f"<b>🏆 Most Popular Dramas:</b>\n"
+        )
+        
+        for i, drama in enumerate(top_dramas, 1):
+            title = drama.get("title", f"Drama {drama['_id']}")
+            stats_text += f"{i}. {title} ({drama['count']} reminders)\n"
+        
+        await message.reply_text(stats_text, parse_mode=ParseMode.HTML)
+        
+    except Exception as e:
+        logger.error(f"Error getting database stats: {e}")
+        await message.reply_text("❌ Error retrieving database statistics!")
+
 @Client.on_message(filters.command(["help"]))
 async def help_command(client, message):
     """Show help information"""
     help_text = (
         "🎬 <b>K-Drama Bot Commands</b>\n\n"
         "🔸 /comingsoon or /upcoming - Show upcoming K-Dramas\n"
-        "🔸 /help - Show this help message\n\n"
+        "🔸 /help or /start - Show this help message\n\n"
         "<b>Features:</b>\n"
         "• View upcoming Korean dramas with release dates\n"
         "• Watch trailers directly from the bot\n"

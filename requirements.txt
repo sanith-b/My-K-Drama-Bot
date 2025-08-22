@@ -1,3 +1,4 @@
+TgCrypto
 pyrofork==2.3.45
 tgcrypto-pyrofork
 pymongo[srv]==4.11.1

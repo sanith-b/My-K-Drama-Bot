@@ -32,4 +32,4 @@ python-Levenshtein==0.21.0
 flask
 redis==5.0.8
 apscheduler==3.10.4
-telegram
+python-telegram-bot==20.8

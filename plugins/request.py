@@ -13,7 +13,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from logging_helper import LOGGER
 
 # Load environment variables - adjust these based on your config
-BOT_TOKEN = os.getenv('BOT_TOKEN', "7633130326:AAEN2HB10hrmV14mhcVyxq7zUXKfUDf8oH4")
 BOT_OWNER_ID = os.getenv('BOT_OWNER_ID', "1204352805")
 MONGODB_URL = os.getenv('MONGODB_URL', "mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr")
 

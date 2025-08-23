@@ -956,7 +956,7 @@ async def manual_reminder_check(client, message):
         logger.error(f"Error in manual reminder check: {e}")
         await message.reply_text("❌ Error checking reminders!")
 
-@Client.on_message(filters.command(["help", "start"]))
+@Client.on_message(filters.command(["comehelp"]))
 async def help_command(client, message):
     """Show help information"""
     help_text = (

@@ -277,7 +277,7 @@ async def delete_message_later(client: Client, chat_id: int, message_id: int, de
         pass
 
 # Command Handlers
-@Client.on_message(filters.command(["kdrama", "request_kdrama"]) & filters.private)
+@Client.on_message(filters.command(["kdrama", "request", "req"]) & filters.private)
 async def kdrama_request_command(client: Client, message: Message):
     """Handle K-Drama request command"""
     user = message.from_user
@@ -423,9 +423,10 @@ async def kdrama_status_command(client: Client, message: Message):
         )
 
 # Admin Commands
+# Admin Commands
 @Client.on_message(filters.command("kdrama_admin") & filters.private)
 async def kdrama_admin_command(client: Client, message: Message):
-    """K-Drama admin panel"""
+    """K-Drama admin panel or specific request review"""
     user = message.from_user
     
     # Initialize if needed
@@ -436,8 +437,17 @@ async def kdrama_admin_command(client: Client, message: Message):
         await message.reply_text("❌ You don't have admin permissions for K-Drama requests.", quote=True)
         return
     
+    # Parse command arguments
+    command_parts = message.text.split()
+    
+    # If specific request ID is provided
+    if len(command_parts) > 1:
+        request_id = command_parts[1].strip().upper()
+        await handle_specific_request_review(client, message, request_id)
+        return
+    
     try:
-        # Get statistics
+        # Show general admin panel
         await kdrama_manager.ensure_db_connected()
         
         total_requests = await kdrama_db.db[f'{KDRAMA_CONFIG["COLLECTION_PREFIX"]}requests'].count_documents({})
@@ -452,7 +462,10 @@ async def kdrama_admin_command(client: Client, message: Message):
             f"• Pending: {pending_requests}\n"
             f"• Approved: {approved_requests}\n"
             f"• Rejected: {rejected_requests}\n\n"
-            f"👥 **Admins:** {len(kdrama_manager.admin_ids)}\n"
+            f"👥 **Admins:** {len(kdrama_manager.admin_ids)}\n\n"
+            f"💡 **Usage:**\n"
+            f"• `/kdrama_admin` - Show this panel\n"
+            f"• `/kdrama_admin [REQUEST_ID]` - Review specific request\n"
         )
         
         keyboard = InlineKeyboardMarkup([
@@ -472,6 +485,88 @@ async def kdrama_admin_command(client: Client, message: Message):
         logger.error(f"Error in admin command: {e}")
         await message.reply_text("❌ Error loading admin panel.", quote=True)
 
+async def handle_specific_request_review(client: Client, message: Message, request_id: str):
+    """Handle review of a specific request by ID"""
+    try:
+        # Get request details
+        request = await kdrama_manager.get_request_by_id(request_id)
+        
+        if not request:
+            await message.reply_text(
+                f"❌ **Request Not Found**\n\n"
+                f"No request found with ID: `{request_id}`\n\n"
+                f"Please check the ID and try again.",
+                quote=True
+            )
+            return
+        
+        # Format request details
+        status_emoji = get_status_emoji(request['status'])
+        
+        request_text = (
+            f"📋 **Request Review: {request_id}**\n\n"
+            f"🆔 **ID:** `{request['request_id']}`\n"
+            f"👤 **User:** @{request['username']} ({request['user_id']})\n"
+            f"🎬 **Drama:** {request['drama_name']}\n"
+            f"📅 **Requested:** {request['created_at'].strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"📊 **Status:** {status_emoji} {request['status'].title()}\n"
+        )
+        
+        # Add additional details if present
+        if request.get('additional_details'):
+            request_text += f"📝 **Details:** {request['additional_details']}\n"
+        
+        # Add processing info if processed
+        if request.get('processed_at'):
+            request_text += f"⚡ **Processed:** {request['processed_at'].strftime('%Y-%m-%d %H:%M UTC')}\n"
+            if request.get('processed_by'):
+                request_text += f"👨‍💼 **Processed by:** {request['processed_by']}\n"
+        
+        # Add admin notes if present
+        if request.get('admin_notes'):
+            request_text += f"💬 **Admin Notes:** {request['admin_notes']}\n"
+        
+        # Create action buttons based on current status
+        keyboard_buttons = []
+        
+        if request['status'] == 'pending':
+            # Show approve/reject buttons for pending requests
+            keyboard_buttons.extend([
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f"kdrama_quick_approve_{request_id}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"kdrama_quick_reject_{request_id}")
+                ],
+                [InlineKeyboardButton("📝 Approve with Note", callback_data=f"kdrama_approve_note_{request_id}")],
+                [InlineKeyboardButton("📝 Reject with Note", callback_data=f"kdrama_reject_note_{request_id}")]
+            ])
+        else:
+            # Show status change options for processed requests
+            if request['status'] != 'approved':
+                keyboard_buttons.append([InlineKeyboardButton("✅ Mark as Approved", callback_data=f"kdrama_quick_approve_{request_id}")])
+            
+            if request['status'] != 'rejected':
+                keyboard_buttons.append([InlineKeyboardButton("❌ Mark as Rejected", callback_data=f"kdrama_quick_reject_{request_id}")])
+            
+            if request['status'] != 'pending':
+                keyboard_buttons.append([InlineKeyboardButton("⏳ Mark as Pending", callback_data=f"kdrama_mark_pending_{request_id}")])
+        
+        # Add general action buttons
+        keyboard_buttons.extend([
+            [InlineKeyboardButton("👤 View User History", callback_data=f"kdrama_user_history_{request['user_id']}")],
+            [InlineKeyboardButton("🛠️ Admin Panel", callback_data="kdrama_admin_panel")]
+        ])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await message.reply_text(request_text, reply_markup=keyboard, quote=True)
+        
+    except Exception as e:
+        logger.error(f"Error reviewing request {request_id}: {e}")
+        await message.reply_text(
+            f"❌ **Error Loading Request**\n\n"
+            f"Failed to load request `{request_id}`. Please try again later.",
+            quote=True
+        )
 # Callback Query Handlers
 @Client.on_callback_query(filters.regex(r"^kdrama_"))
 async def kdrama_callback_handler(client: Client, callback_query: CallbackQuery):

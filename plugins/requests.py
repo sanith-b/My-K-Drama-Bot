@@ -6,7 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 
 # === MongoDB setup ===
-MONGO_URI = os.getenv(""mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr")
+MONGO_URI = os.getenv("mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr")
 mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client["pastppr"]
 requests_col = db["requests"]

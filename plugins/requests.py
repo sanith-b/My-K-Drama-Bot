@@ -8,7 +8,7 @@ import os
 # === MongoDB setup ===
 MONGO_URI = os.getenv("mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr")
 mongo_client = AsyncIOMotorClient(MONGO_URI)
-db = mongo_client["pastppr"]
+db = mongo_client["kdrama"]
 requests_col = db["requests"]
 
 # === Admin IDs ===

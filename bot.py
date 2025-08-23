@@ -22,7 +22,6 @@ import pyrogram.utils
 from PIL import Image
 import threading, time, requests
 from logging_helper import LOGGER
-from plugins.kdrama_requests import init_kdrama_plugin
 
 
 botStartTime = time.time()
@@ -96,7 +95,6 @@ async def SilentXBotz_start():
     bind_address = "0.0.0.0"
     await web.TCPSite(app, bind_address, PORT).start()
     await idle()
-    await init_kdrama_plugin()
 
 
 if __name__ == '__main__':

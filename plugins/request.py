@@ -995,31 +995,17 @@ def setup_handlers(application: Application, drama_system: KDramaRequestSystem):
     application.add_handler(CommandHandler("removeadmin", remove_admin_command))
 
 # Plugin initialization function
-async def initialize_plugin():
-    """Initialize the K-Drama Request plugin"""
-    try:
-        print("🚀 Initializing K-Drama Request Plugin...")
-        
-        # Initialize services
-        drama_system = await init_services()
-        
-        # Add bot owner as admin if specified
-        bot_owner_id = os.getenv('BOT_OWNER_ID', BOT_OWNER_ID)
-        if bot_owner_id:
-            try:
-                await drama_system.add_admin(int(bot_owner_id))
-                print(f"✅ Bot owner ({bot_owner_id}) added as admin")
-            except ValueError:
-                print("⚠️ Invalid BOT_OWNER_ID")
-        
-        print("✅ K-Drama Request Plugin initialized successfully!")
-        print(f"✅ MongoDB connected")
-        print(f"✅ {len(drama_system.admin_ids)} admins loaded")
-        
-        return drama_system
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize plugin: {e}")
-        raise
+async def start_bot(app: Client):
+    """Start the bot and background tasks"""
+    await init_connections()
+    
+    # Start background scheduler
+    asyncio.create_task(reminder_scheduler(app))
+    
+    logger.info("Bot started with reminder system!")
 
-# Export for use as plugin
+# Shutdown handler
+async def stop_bot():
+    """Cleanup when bot stops"""
+    await cleanup()
+    logger.info("Bot stopped and cleaned up!")

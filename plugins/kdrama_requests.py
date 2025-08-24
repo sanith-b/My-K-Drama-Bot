@@ -858,55 +858,67 @@ async def cleanup_old_requests():
         logger.error(f"Error during cleanup: {e}")
 
 # Initialize the plugin when imported
-async def init_kdrama_plugin():
-    """Initialize the K-Drama plugin"""
+async def init_kdrama_plugin() -> bool:
+    """
+    Initialize the K-Drama plugin
+    
+    Returns:
+        bool: True if initialization successful, False otherwise
+    """
     try:
         await kdrama_manager.load_admins()
-        logger.info("✅ K-Drama Request Plugin initialized")
+        logger.info("✅ K-Drama Request Plugin initialized successfully")
+        return True
     except Exception as e:
         logger.error(f"❌ Failed to initialize K-Drama plugin: {e}")
+        return False
+
+def safe_plugin_init():
+    """Safely initialize the plugin with proper event loop handling"""
+    try:
+        # Check if we're in an async context
+        loop = asyncio.get_running_loop()
+        # If we have a running loop, schedule the initialization
+        asyncio.create_task(init_kdrama_plugin())
+    except RuntimeError:
+        # No event loop running, this is expected during module import
+        # The initialization will be handled when the bot starts
+        logger.info("No event loop running, K-Drama plugin will initialize when bot starts")
+    except Exception as e:
+        logger.error(f"Error during plugin initialization: {e}")
 
 # Auto-initialize when module is imported
-try:
-    # Use ensure_future instead of create_task for better compatibility
-    asyncio.ensure_future(init_kdrama_plugin())
-except RuntimeError:
-    # If no event loop is running, create one
-    pass
+safe_plugin_init()
 
 # Plugin Information
 PLUGIN_INFO = {
     "name": "K-Drama Request System",
-    "version": "1.0.0",
-    "description": "Advanced K-Drama request system for Auto-Filter-Bot",
+    "version": "1.0.1",  # Incremented for improvements
+    "description": "Advanced K-Drama request system for Auto-Filter-Bot with enhanced error handling",
     "author": "Auto-Filter-Bot Community",
     "commands": [
         "/kdrama - Request a K-Drama",
         "/request - Alternative request command", 
         "/kdrama_status - Check your request status",
-        "/kdrama_admin - Admin panel (admins only)"
+        "/kdrama_admin - Admin panel (admins only)",
+        "/kdrama_help - Show plugin help"
     ],
     "features": [
         "Rate limiting and spam protection",
-        "Admin approval system",
+        "Admin approval system", 
         "User statistics and analytics",
         "Real-time notifications",
-        "Database integration with Auto-Filter-Bot"
-    ]
-}Refresh", callback_data="kdrama_my_status")],
-            [InlineKeyboardButton("🎬 New Request", callback_data="kdrama_new_request")]
-        ])
-        
-        await message.reply_text(status_text, reply_markup=keyboard, quote=True)
-        
-    except Exception as e:
-        logger.error(f"Error showing status: {e}")
-        await message.reply_text(
-            "❌ **Error Loading Status**\n\n"
-            "Unable to load your requests. Please try again later.",
-            quote=True
-        )
-
+        "Database integration with Auto-Filter-Bot",
+        "Enhanced error handling and logging",
+        "Graceful initialization"
+    ],
+    "requirements": [
+        "python-telegram-bot>=20.0",
+        "asyncio",
+        "logging"
+    ],
+    "initialization_time": datetime.now().isoformat()
+}
 # Admin Commands
 @Client.on_message(filters.command("kdrama_admin") & filters.private)
 async def kdrama_admin_command(client: Client, message: Message):

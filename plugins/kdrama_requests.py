@@ -29,9 +29,8 @@ except ImportError:
     DATABASE_URI = "mongodb://localhost:27017"
     ADMINS = []
 
-# Plugin Configuration
+# Plugin Configuration - FIXED
 KDRAMA_CONFIG = {
-    'MONGODB_URL': DATABASE_URI,
     'DATABASE_NAME': 'autofilter_bot',
     'COLLECTION_PREFIX': 'kdrama_',
     'MAX_REQUESTS_PER_DAY': 5,
@@ -57,7 +56,8 @@ class KDramaDatabase:
             return
         
         try:
-            self.client = AsyncIOMotorClient(KDRAMA_CONFIG['MONGODB_URL'])
+            # Use DATABASE_URI directly - FIXED
+            self.client = AsyncIOMotorClient(DATABASE_URI)
             self.db = self.client[KDRAMA_CONFIG['DATABASE_NAME']]
             
             # Test connection
@@ -1268,8 +1268,8 @@ safe_init()
 # Plugin Information
 PLUGIN_INFO = {
     "name": "K-Drama Request System",
-    "version": "1.0.2",
-    "description": "Advanced K-Drama request system for Auto-Filter-Bot with bug fixes",
+    "version": "1.0.3",
+    "description": "Advanced K-Drama request system for Auto-Filter-Bot with MongoDB connection fix",
     "author": "Auto-Filter-Bot Community",
     "commands": [
         "/kdrama - Request a K-Drama",
@@ -1283,7 +1283,8 @@ PLUGIN_INFO = {
         "User statistics and analytics",
         "Real-time notifications",
         "Database integration with Auto-Filter-Bot",
-        "Enhanced error handling and recovery"
+        "Enhanced error handling and recovery",
+        "Fixed MongoDB connection configuration"
     ],
     "requirements": [
         "pyrogram>=2.0.0",
@@ -1291,5 +1292,3 @@ PLUGIN_INFO = {
         "pymongo>=4.0.0"
     ]
 }
-
-

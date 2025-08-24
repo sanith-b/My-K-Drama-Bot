@@ -23,15 +23,16 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 # Import bot configuration - adjust these imports based on your bot structure
 try:
-    from info import ADMINS
+    from info import DATABASE_URI, ADMINS
 except ImportError:
     # Fallback values if info.py is not available
-    DATABASE_NAME = "pastppr"
-    DATABASE_URI = "mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr7"
+    DATABASE_URI = "mongodb://localhost:27017"
     ADMINS = []
 
 # Plugin Configuration
 KDRAMA_CONFIG = {
+    'MONGODB_URL': DATABASE_URI,
+    'DATABASE_NAME': 'autofilter_bot',
     'COLLECTION_PREFIX': 'kdrama_',
     'MAX_REQUESTS_PER_DAY': 5,
     'REQUEST_COOLDOWN_MINUTES': 10,
@@ -1290,4 +1291,4 @@ PLUGIN_INFO = {
         "pymongo>=4.0.0"
     ]
 }
-            
+                f"

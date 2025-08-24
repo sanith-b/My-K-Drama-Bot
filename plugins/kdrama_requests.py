@@ -26,13 +26,12 @@ try:
     from info import ADMINS
 except ImportError:
     # Fallback values if info.py is not available
+    DATABASE_NAME = "pastppr"
     DATABASE_URI = "mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr7"
     ADMINS = []
 
 # Plugin Configuration
 KDRAMA_CONFIG = {
-    'MONGODB_URL': DATABASE_URI,
-    'DATABASE_NAME': 'autofilter_bot',
     'COLLECTION_PREFIX': 'kdrama_',
     'MAX_REQUESTS_PER_DAY': 5,
     'REQUEST_COOLDOWN_MINUTES': 10,

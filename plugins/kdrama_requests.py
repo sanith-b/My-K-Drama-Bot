@@ -23,10 +23,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 # Import bot configuration - adjust these imports based on your bot structure
 try:
-    from info import DATABASE_URI, ADMINS
+    from info import ADMINS
 except ImportError:
     # Fallback values if info.py is not available
-    DATABASE_URI = "mongodb://localhost:27017"
+    DATABASE_URI = "mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr7"
     ADMINS = []
 
 # Plugin Configuration
@@ -284,7 +284,7 @@ async def delete_message_later(client: Client, chat_id: int, message_id: int, de
         logger.debug(f"Failed to delete message: {e}")
 
 # Command Handlers
-@Client.on_message(filters.command(["kdrama", "request", "req"]) & filters.private)
+@Client.on_message(filters.command(["kdrama", "req"]) & filters.private)
 async def kdrama_request_command(client: Client, message: Message):
     """Handle K-Drama request command"""
     user = message.from_user

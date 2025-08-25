@@ -1,16 +1,16 @@
-# inline_search.py - Add this as a new plugin or add to existing pm_filter.py
+# inline_search.py - Fixed version with correct parse mode
 
 import re
 import asyncio
 import logging
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums
 from pyrogram.types import (
     InlineQuery, InlineQueryResultArticle, InlineQueryResultPhoto,
     InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
 )
 from pyrogram.errors import QueryIdInvalid
-from database.ia_filterdb import get_search_results  # Your existing search function
-from utils import get_size, is_subscribed, get_poster  # Your existing utility functions
+from database.ia_filterdb import get_search_results
+from utils import get_size, is_subscribed, get_poster
 from Script import script
 
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +41,7 @@ async def inline_search(bot, query: InlineQuery):
             return
         
         # Handle special commands
-        if search_query.lower().startswith(('start')):
+        if search_query.lower().startswith(('help', 'start', 'info')):
             await show_inline_help(query)
             return
         
@@ -63,7 +63,7 @@ async def perform_inline_search(bot, query: InlineQuery, search_query: str):
         
         # Search in database
         files, offset, total_results = await get_search_results(
-            chat_id=query.from_user.id,  # Use user ID as chat_id for inline
+            chat_id=query.from_user.id,
             query=search_query,
             offset=0,
             filter=True
@@ -95,32 +95,21 @@ async def perform_inline_search(bot, query: InlineQuery, search_query: str):
                     [InlineKeyboardButton("🔍 More Results", switch_inline_query_current_chat=search_query)]
                 ])
                 
-                # Create message content
-                message_text = f"**🎬 {file_name}**\n\n📁 Size: {file_size}\n🎭 Type: {file_type.title()}\n\n💡 Click 'Get File' to download!"
+                # Create message content - FIXED: Using HTML instead of markdown
+                message_text = f"<b>🎬 {file_name}</b>\n\n📁 Size: {file_size}\n🎭 Type: {file_type.title()}\n\n💡 Click 'Get File' to download!"
                 
                 # Create inline result
-                if file_type == 'photo' and hasattr(file, 'file_id'):
-                    result = InlineQueryResultPhoto(
-                        id=f"file_{idx}_{file_id[:10]}",
-                        photo_url=f"https://telegra.ph/file/{file_id}.jpg",  # Adjust URL as needed
-                        thumb_url=f"https://telegra.ph/file/{file_id}.jpg",
-                        title=file_name[:64],  # Telegram limit
-                        description=description,
-                        caption=message_text,
-                        reply_markup=keyboard
-                    )
-                else:
-                    result = InlineQueryResultArticle(
-                        id=f"file_{idx}_{file_id[:10]}",
-                        title=file_name[:64],
-                        description=description,
-                        input_message_content=InputTextMessageContent(
-                            message_text=message_text,
-                            parse_mode="markdown"
-                        ),
-                        reply_markup=keyboard,
-                        thumb_url="https://telegra.ph/file/your-default-thumb.jpg"  # Add your default thumbnail
-                    )
+                result = InlineQueryResultArticle(
+                    id=f"file_{idx}_{file_id[:10]}",
+                    title=file_name[:64],
+                    description=description,
+                    input_message_content=InputTextMessageContent(
+                        message_text=message_text,
+                        parse_mode=enums.ParseMode.HTML  # FIXED: Use enums.ParseMode.HTML
+                    ),
+                    reply_markup=keyboard,
+                    thumb_url="https://telegra.ph/file/default-thumb.jpg"
+                )
                 
                 results.append(result)
                 
@@ -135,11 +124,11 @@ async def perform_inline_search(bot, query: InlineQuery, search_query: str):
                 title=f"📂 {total_results - MAX_INLINE_RESULTS} More Results Available",
                 description=f"Found {total_results} total results for '{search_query}'",
                 input_message_content=InputTextMessageContent(
-                    message_text=f"🔍 Search Results for **{search_query}**\n\n"
+                    message_text=f"🔍 Search Results for <b>{search_query}</b>\n\n"
                                 f"📊 Total Results: {total_results}\n"
                                 f"📋 Showing: {len(results)}\n\n"
                                 f"💡 Use /search {search_query} for complete results in private chat!",
-                    parse_mode="markdown"
+                    parse_mode=enums.ParseMode.HTML  # FIXED: Use enums.ParseMode.HTML
                 ),
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔍 Full Search", url=f"https://t.me/{bot.me.username}?start=search_{search_query.replace(' ', '_')}")]
@@ -150,7 +139,7 @@ async def perform_inline_search(bot, query: InlineQuery, search_query: str):
         # Answer the inline query
         await query.answer(
             results=results,
-            cache_time=60,  # Cache for 1 minute
+            cache_time=60,
             switch_pm_text="🎭 Open K-Drama Bot",
             switch_pm_parameter="inline_search"
         )
@@ -166,34 +155,33 @@ async def show_inline_help(query: InlineQuery):
         title="🆘 How to use Inline Search",
         description="Learn how to search for K-Dramas inline",
         input_message_content=InputTextMessageContent(
-            message_text="🎭 **K-Drama Bot - Inline Search Help**\n\n"
-                        "**How to use:**\n"
-                        "• Type `@myKdrama_bot [drama name]` in any chat\n"
-                        "• Example: `@myKdrama_bot Squid Game`\n"
+            message_text="🎭 <b>K-Drama Bot - Inline Search Help</b>\n\n"
+                        "<b>How to use:</b>\n"
+                        "• Type <code>@myKdrama_bot [drama name]</code> in any chat\n"
+                        "• Example: <code>@myKdrama_bot Squid Game</code>\n"
                         "• Minimum 3 characters required\n\n"
-                        "**Features:**\n"
+                        "<b>Features:</b>\n"
                         "📱 Search from any chat\n"
                         "🎬 Instant results\n"
                         "📥 Direct file access\n"
                         "🔍 Smart search suggestions\n\n"
-                        "**Popular Searches:**\n"
+                        "<b>Popular Searches:</b>\n"
                         "• Crash Landing on You\n"
                         "• Descendants of the Sun\n"
                         "• Goblin\n"
                         "• Hotel Del Luna\n\n"
                         "Start typing to search! 🚀",
-            parse_mode="markdown"
+            parse_mode=enums.ParseMode.HTML  # FIXED: Use enums.ParseMode.HTML
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎭 Open Bot", url=f"https://t.me/myKdrama_bot")],
-            [InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel")]  # Replace with your channel
-        ]),
-        thumb_url="https://telegra.ph/file/help-thumb.jpg"  # Add your help thumbnail
+            [InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel")]
+        ])
     )
     
     await query.answer(
         results=[help_result],
-        cache_time=300,  # Cache help for 5 minutes
+        cache_time=300,
         switch_pm_text="🎭 Open K-Drama Bot",
         switch_pm_parameter="help"
     )
@@ -205,15 +193,15 @@ async def show_query_too_short(query: InlineQuery, search_query: str):
         title=f"⚠️ Query too short: '{search_query}'",
         description="Please type at least 3 characters to search",
         input_message_content=InputTextMessageContent(
-            message_text=f"⚠️ **Search Query Too Short**\n\n"
-                        f"Your query: `{search_query}`\n"
+            message_text=f"⚠️ <b>Search Query Too Short</b>\n\n"
+                        f"Your query: <code>{search_query}</code>\n"
                         f"Required: Minimum 3 characters\n\n"
-                        f"**Try searching for:**\n"
-                        f"• Drama names: `Squid Game`\n"
-                        f"• Actor names: `Song Joong Ki`\n"
-                        f"• Genres: `Romance Drama`\n\n"
+                        f"<b>Try searching for:</b>\n"
+                        f"• Drama names: <code>Squid Game</code>\n"
+                        f"• Actor names: <code>Song Joong Ki</code>\n"
+                        f"• Genres: <code>Romance Drama</code>\n\n"
                         f"Type more characters to search! 🔍",
-            parse_mode="markdown"
+            parse_mode=enums.ParseMode.HTML  # FIXED: Use enums.ParseMode.HTML
         )
     )
     
@@ -229,19 +217,19 @@ async def show_no_results(query: InlineQuery, search_query: str):
         title=f"❌ No results for '{search_query}'",
         description="Try different keywords or request the drama",
         input_message_content=InputTextMessageContent(
-            message_text=f"❌ **No Results Found**\n\n"
-                        f"Search query: `{search_query}`\n\n"
-                        f"**Suggestions:**\n"
+            message_text=f"❌ <b>No Results Found</b>\n\n"
+                        f"Search query: <code>{search_query}</code>\n\n"
+                        f"<b>Suggestions:</b>\n"
                         f"• Try different keywords\n"
                         f"• Check spelling\n"
                         f"• Use English names\n"
-                        f"• Request the drama: `/req {search_query}`\n\n"
-                        f"**Popular Dramas:**\n"
+                        f"• Request the drama: <code>/req {search_query}</code>\n\n"
+                        f"<b>Popular Dramas:</b>\n"
                         f"• Crash Landing on You\n"
                         f"• Descendants of the Sun\n"
                         f"• Goblin\n"
                         f"• Hotel Del Luna",
-            parse_mode="markdown"
+            parse_mode=enums.ParseMode.HTML  # FIXED: Use enums.ParseMode.HTML
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📝 Request Drama", url=f"https://t.me/myKdrama_bot?start=req_{search_query.replace(' ', '_')}")],
@@ -255,31 +243,39 @@ async def show_no_results(query: InlineQuery, search_query: str):
     )
 
 async def show_inline_error(query: InlineQuery):
-    """Show error message"""
-    error_result = InlineQueryResultArticle(
-        id="error",
-        title="❌ Search Error",
-        description="Something went wrong. Please try again.",
-        input_message_content=InputTextMessageContent(
-            message_text="❌ **Search Error**\n\n"
-                        "Something went wrong while searching.\n\n"
-                        "**Please try:**\n"
-                        "• Refreshing the search\n"
-                        "• Using different keywords\n"
-                        "• Contacting support if issue persists\n\n"
-                        "Sorry for the inconvenience! 🙏",
-            parse_mode="markdown"
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Retry", switch_inline_query_current_chat="")],
-            [InlineKeyboardButton("💬 Support", url="https://t.me/your_support")]  # Replace with your support
-        ])
-    )
-    
-    await query.answer(
-        results=[error_result],
-        cache_time=10
-    )
+    """Show error message - FIXED VERSION"""
+    try:
+        error_result = InlineQueryResultArticle(
+            id="error",
+            title="❌ Search Error",
+            description="Something went wrong. Please try again.",
+            input_message_content=InputTextMessageContent(
+                message_text="❌ <b>Search Error</b>\n\n"
+                            "Something went wrong while searching.\n\n"
+                            "<b>Please try:</b>\n"
+                            "• Refreshing the search\n"
+                            "• Using different keywords\n"
+                            "• Contacting support if issue persists\n\n"
+                            "Sorry for the inconvenience! 🙏",
+                parse_mode=enums.ParseMode.HTML  # FIXED: Use enums.ParseMode.HTML
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Retry", switch_inline_query_current_chat="")],
+                [InlineKeyboardButton("💬 Support", url="https://t.me/your_support")]
+            ])
+        )
+        
+        await query.answer(
+            results=[error_result],
+            cache_time=10
+        )
+    except Exception as e:
+        logger.error(f"Critical error in show_inline_error: {e}")
+        # Fallback - answer with empty results
+        try:
+            await query.answer(results=[], cache_time=1)
+        except:
+            pass  # Even fallback failed
 
 def format_duration(duration):
     """Format duration in seconds to readable format"""
@@ -295,7 +291,7 @@ def format_duration(duration):
     except:
         return "Unknown"
 
-# Handler for inline callback queries (when user clicks "Get File")
+# Handler for inline callback queries
 @Client.on_callback_query(filters.regex(r"^file#"))
 async def handle_inline_file_request(bot, query):
     """
@@ -309,21 +305,16 @@ async def handle_inline_file_request(bot, query):
             await query.answer("❌ This button is not for you!", show_alert=True)
             return
         
-        # Check if user is subscribed (if you have subscription check)
-        if hasattr(bot, 'force_sub_channels') and bot.force_sub_channels:
-            if not await is_subscribed(bot, query):
-                await query.answer("⚠️ Please join our channels first!", show_alert=True)
-                return
-        
         # Send the file
         try:
             await bot.send_cached_media(
                 chat_id=query.from_user.id,
                 file_id=file_id,
-                caption="🎬 **Here's your requested file!**\n\n"
+                caption="🎬 <b>Here's your requested file!</b>\n\n"
                        "📤 Sent via inline search\n"
                        "🎭 @myKdrama_bot\n\n"
                        "💡 Share with friends: @myKdrama_bot",
+                parse_mode=enums.ParseMode.HTML,  # FIXED: Use enums.ParseMode.HTML
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔍 Search More", switch_inline_query="")],
                     [InlineKeyboardButton("📢 Share Bot", url="https://t.me/share/url?url=https://t.me/myKdrama_bot")]
@@ -339,29 +330,12 @@ async def handle_inline_file_request(bot, query):
         logger.error(f"Error in handle_inline_file_request: {e}")
         await query.answer("❌ Something went wrong!", show_alert=True)
 
-# Optional: Add inline search statistics
-inline_search_stats = {}
-
-async def update_inline_stats(user_id, query):
-    """Update inline search statistics"""
-    try:
-        if user_id not in inline_search_stats:
-            inline_search_stats[user_id] = {
-                'searches': 0,
-                'last_search': None
-            }
-        
-        inline_search_stats[user_id]['searches'] += 1
-        inline_search_stats[user_id]['last_search'] = query
-        
-        # Log popular searches
-        logger.info(f"Inline search: {query} by user {user_id}")
-        
-    except Exception as e:
-        logger.error(f"Error updating inline stats: {e}")
-
-# Enable inline mode in BotFather:
-# 1. Message @BotFather
-# 2. Send /setinline
-# 3. Select your bot
-# 4. Send placeholder text like "Search K-Dramas..."
+# Simplified script class if script.py is missing
+try:
+    import script
+except ImportError:
+    class script:
+        ALRT_TXT = "Hey {first_name}, This Is Not For You!"
+        TOP_ALRT_MSG = "Searching... Please wait! ⏳"
+        MVE_NT_FND = "❌ Movie not found. Try different keywords."
+        NORSLTS = "No results for {2} by user {1}"

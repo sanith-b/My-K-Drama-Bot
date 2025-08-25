@@ -710,28 +710,58 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
-    _, id, user = query.data.split('#')
-    if int(user) != 0 and query.from_user.id != int(user):
-        return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-    movies = await get_poster(id, id=True)
-    movie = movies.get('title')
-    movie = re.sub(r"[:-]", " ", movie)
-    movie = re.sub(r"\s+", " ", movie).strip()
-    await query.answer(script.TOP_ALRT_MSG)
-    files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
-    if files:
-        k = (movie, files, offset, total_results)
-        await auto_filter(bot, query, k)
-    else:
-        reqstr1 = query.from_user.id if query.from_user else 0
-        reqstr = await bot.get_users(reqstr1)
-        if NO_RESULTS_MSG:
-            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
-        contact_admin_button = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
-        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
-        await asyncio.sleep(10)
-        await k.delete()
+    try:
+        _, movie_id, user = query.data.split('#')
+
+        # Restrict access to only original user
+        if int(user) != 0 and query.from_user.id != int(user):
+            return await query.answer(
+                script.ALRT_TXT.format(query.from_user.first_name),
+                show_alert=True
+            )
+
+        # Get movie details
+        movies = await get_poster(movie_id, id=True)
+        movie = movies.get('title') if movies else None
+
+        if not movie:
+            return await query.answer("❌ Movie details not found!", show_alert=True)
+
+        # Clean movie title
+        movie = re.sub(r"[:-]", " ", movie)
+        movie = re.sub(r"\s+", " ", movie).strip()
+
+        await query.answer(script.TOP_ALRT_MSG, cache_time=3)
+
+        # Search in DB
+        files, offset, total_results = await get_search_results(
+            query.message.chat.id, movie, offset=0, filter=True
+        )
+
+        if files:
+            await auto_filter(bot, query, (movie, files, offset, total_results))
+        else:
+            req_user = query.from_user
+            if NO_RESULTS_MSG:
+                await bot.send_message(
+                    chat_id=BIN_CHANNEL,
+                    text=script.NORSLTS.format(req_user.id, req_user.mention, movie)
+                )
+
+            contact_admin_button = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]]
+            )
+
+            k = await query.message.edit(
+                script.MVE_NT_FND,
+                reply_markup=contact_admin_button
+            )
+            await asyncio.sleep(10)
+            await k.delete()
+
+    except Exception as e:
+        logging.exception("Error in spol callback: %s", e)
+        await query.answer("⚠️ Something went wrong!", show_alert=True)
                 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):

@@ -201,8 +201,9 @@ It may not be released or added to our database</i></b> ❌
 It may not be released or added to our database</i></b> ❌
 """
     
-    MVE_NT_FND = """🎬 <b><i>This movie isn’t available yet.  
-It may not be released or added to our database</i></b> ❌
+    MVE_NT_FND = """ <b><i>⚠️ Not available yet.
+
+Request via bot PM: /kdrama [drama name]</i></b> 
 """
     
     TOP_ALRT_MSG = """🔍 Searching your query in my database..."""

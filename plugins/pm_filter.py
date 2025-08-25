@@ -26,6 +26,8 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
+import logging
+from pyrogram.errors.exceptions.bad_request_400 import PeerIdInvalid
 
 tracemalloc.start()
 
@@ -34,6 +36,9 @@ BUTTON = {}
 BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @Client.on_message(filters.group & filters.text & filters.incoming)
@@ -708,60 +713,194 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
     except Exception as e:
         LOGGER.error(f"Error In Season - {e}")
 
+# Add these imports at the top of your pm_filter.py file
+import logging
+import re
+import asyncio
+from pyrogram.errors.exceptions.bad_request_400 import PeerIdInvalid, ChannelInvalid
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
+    """
+    Fixed version with proper error handling and syntax fixes
+    """
     try:
-        _, movie_id, user = query.data.split('#')
-
+        # Fix the unpacking syntax - this was the main syntax error
+        data_parts = query.data.split('#')
+        if len(data_parts) != 3:
+            return await query.answer("❌ Invalid callback data format!", show_alert=True)
+        
+        _, movie_id, user = data_parts
+        
+        # Validate user parameter
+        try:
+            user_id = int(user) if user != '0' else 0
+        except ValueError:
+            return await query.answer("❌ Invalid user ID!", show_alert=True)
+        
         # Restrict access to only original user
-        if int(user) != 0 and query.from_user.id != int(user):
+        if user_id != 0 and query.from_user.id != user_id:
             return await query.answer(
                 script.ALRT_TXT.format(query.from_user.first_name),
                 show_alert=True
             )
-
-        # Get movie details
-        movies = await get_poster(movie_id, id=True)
-        movie = movies.get('title') if movies else None
-
+        
+        # Get movie details with validation
+        try:
+            movies = await get_poster(movie_id, id=True)
+            movie = movies.get('title') if movies else None
+        except Exception as e:
+            logger.error(f"Error getting movie poster for ID {movie_id}: {e}")
+            return await query.answer("❌ Error fetching movie details!", show_alert=True)
+        
         if not movie:
             return await query.answer("❌ Movie details not found!", show_alert=True)
-
+        
         # Clean movie title
         movie = re.sub(r"[:-]", " ", movie)
         movie = re.sub(r"\s+", " ", movie).strip()
-
+        
+        # Validate cleaned movie title
+        if not movie:
+            return await query.answer("❌ Invalid movie title!", show_alert=True)
+        
         await query.answer(script.TOP_ALRT_MSG, cache_time=3)
-
-        # Search in DB
-        files, offset, total_results = await get_search_results(
-            query.message.chat.id, movie, offset=0, filter=True
-        )
-
+        
+        # Search in DB with error handling
+        try:
+            files, offset, total_results = await get_search_results(
+                query.message.chat.id, movie, offset=0, filter=True
+            )
+        except Exception as e:
+            logger.error(f"Error searching for movie '{movie}': {e}")
+            return await query.answer("❌ Search error occurred!", show_alert=True)
+        
         if files:
-            await auto_filter(bot, query, (movie, files, offset, total_results))
+            # Send results
+            try:
+                await auto_filter(bot, query, (movie, files, offset, total_results))
+            except Exception as e:
+                logger.error(f"Error in auto_filter for movie '{movie}': {e}")
+                await query.answer("❌ Error displaying results!", show_alert=True)
         else:
+            # No results found
             req_user = query.from_user
+            
+            # Send to bin channel with proper error handling
             if NO_RESULTS_MSG:
-                await bot.send_message(
-                    chat_id=BIN_CHANNEL,
-                    text=script.NORSLTS.format(req_user.id, req_user.mention, movie)
-                )
-
+                try:
+                    # Validate BIN_CHANNEL before using
+                    if not validate_chat_id(BIN_CHANNEL):
+                        logger.error(f"Invalid BIN_CHANNEL ID: {BIN_CHANNEL}")
+                    else:
+                        await safe_send_message(
+                            bot,
+                            chat_id=BIN_CHANNEL,
+                            text=script.NORSLTS.format(req_user.id, req_user.mention, movie)
+                        )
+                except Exception as e:
+                    logger.error(f"Error sending to BIN_CHANNEL {BIN_CHANNEL}: {e}")
+            
+            # Create contact admin button
             contact_admin_button = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]]
             )
-
-            k = await query.message.edit(
-                script.MVE_NT_FND,
-                reply_markup=contact_admin_button
-            )
-            await asyncio.sleep(10)
-            await k.delete()
-
+            
+            try:
+                k = await query.message.edit(
+                    script.MVE_NT_FND,
+                    reply_markup=contact_admin_button
+                )
+                await asyncio.sleep(10)
+                await k.delete()
+            except Exception as e:
+                logger.error(f"Error editing/deleting message: {e}")
+                
     except Exception as e:
-        logging.exception("Error in spol callback: %s", e)
-        await query.answer("⚠️ Something went wrong!", show_alert=True)
+        logger.error(f"Unexpected error in advantage_spoll_choker: {e}", exc_info=True)
+        try:
+            await query.answer("⚠️ Something went wrong!", show_alert=True)
+        except:
+            pass  # Even answering failed, log it
+            logger.error("Failed to send error response to user")
+
+def validate_chat_id(chat_id):
+    """
+    Validate if a chat_id is in the correct format for Telegram
+    """
+    try:
+        if isinstance(chat_id, str):
+            if chat_id.lstrip('-').isdigit():
+                chat_id = int(chat_id)
+            else:
+                return True  # Username format is valid
+        
+        if isinstance(chat_id, int):
+            # Valid ranges for Telegram chat IDs
+            if chat_id > 0:  # User or bot ID
+                return 1 <= chat_id <= 2147483647
+            elif chat_id < -999999999999:  # Supergroup/channel ID
+                return -1999999999999 <= chat_id <= -1000000000000
+            else:  # Regular group ID
+                return -2147483648 <= chat_id <= -1
+        
+        return False
+    except Exception as e:
+        logger.error(f"Error validating chat_id {chat_id}: {e}")
+        return False
+
+async def safe_send_message(bot, chat_id, text, **kwargs):
+    """
+    Safely send a message with proper error handling
+    """
+    try:
+        if not validate_chat_id(chat_id):
+            logger.error(f"Invalid chat ID format: {chat_id}")
+            return False
+            
+        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        return True
+    except PeerIdInvalid:
+        logger.error(f"Invalid peer ID: {chat_id}")
+        return False
+    except ChannelInvalid:
+        logger.error(f"Invalid channel: {chat_id}")
+        return False
+    except Exception as e:
+        logger.error(f"Error sending message to {chat_id}: {e}")
+        return False
+
+# Additional helper function to check your BIN_CHANNEL configuration
+def check_bin_channel_config():
+    """
+    Check if BIN_CHANNEL is properly configured
+    """
+    try:
+        from info import BIN_CHANNEL  # Adjust import as needed
+        
+        if not BIN_CHANNEL:
+            logger.warning("BIN_CHANNEL is not configured")
+            return False
+            
+        if not validate_chat_id(BIN_CHANNEL):
+            logger.error(f"BIN_CHANNEL has invalid format: {BIN_CHANNEL}")
+            return False
+            
+        logger.info(f"BIN_CHANNEL is properly configured: {BIN_CHANNEL}")
+        return True
+    except ImportError:
+        logger.error("Could not import BIN_CHANNEL from info module")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking BIN_CHANNEL config: {e}")
+        return False
+
+# Call this when your bot starts to validate configuration
+# check_bin_channel_config()
                 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):

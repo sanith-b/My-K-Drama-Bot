@@ -807,7 +807,7 @@ async def advantage_spoll_choker(bot, query):
             
             # Create contact admin button
             contact_admin_button = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]]
+                [[InlineKeyboardButton("🔔 Send Request 🔔", url="https://t.me/myKdrama_bot")]]
             )
             
             try:

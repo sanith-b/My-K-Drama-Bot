@@ -169,21 +169,14 @@ async def show_inline_help(query: InlineQuery):
                         "📥 Direct file access\n"
                         "🔍 Smart search suggestions\n"
                         "📝 Request missing dramas\n\n"
-                        "<b>Special Commands:</b>\n"
-                        "• <code>@myKdrama_bot help</code> - Show this help\n"
-                        "• <code>@myKdrama_bot request</code> - Request help\n\n"
-                        "<b>Popular Searches:</b>\n"
-                        "• Crash Landing on You\n"
-                        "• Descendants of the Sun\n"
-                        "• Goblin\n"
-                        "• Hotel Del Luna\n\n"
+
                         "Start typing to search! 🚀",
             parse_mode=enums.ParseMode.HTML
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎭 Open Bot", url=f"https://t.me/myKdrama_bot")],
-            [InlineKeyboardButton("📝 Request Help", switch_inline_query_current_chat="request")],
-            [InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel")]
+            [InlineKeyboardButton("📝 Request Help", switch_inline_query_current_chat="req")],
+            [InlineKeyboardButton("📢 Channel", url="https://t.me/+5oPx_k2OQNQxZmY1")]
         ])
     )
     
@@ -220,8 +213,7 @@ async def show_request_help(query: InlineQuery, search_query: str):
                 parse_mode=enums.ParseMode.HTML
             ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📢 Updates Channel", url="https://t.me/your_channel")],
-                [InlineKeyboardButton("💬 Contact Admin", url="https://t.me/your_admin")],
+                [InlineKeyboardButton("📢 Updates Channel", url="https://t.me/+5oPx_k2OQNQxZmY1")],
                 [InlineKeyboardButton("🔍 Search Again", switch_inline_query="")]
             ])
         )
@@ -232,35 +224,24 @@ async def show_request_help(query: InlineQuery, search_query: str):
             title="🆘 How to Request Dramas",
             description="Learn the best way to request missing content",
             input_message_content=InputTextMessageContent(
-                message_text="📝 <b>How to Request K-Dramas & Movies</b>\n\n"
-                            "<b>🎯 Best Request Format:</b>\n"
-                            "• Full drama name (English & Korean)\n"
-                            "• Year of release\n"
-                            "• Number of episodes\n"
-                            "• Quality preference (if any)\n\n"
-                            "<b>✅ Good Examples:</b>\n"
-                            "• <code>Crash Landing on You (2019) - 16 episodes</code>\n"
-                            "• <code>사랑의 불시착 - CLOY 1080p</code>\n"
-                            "• <code>Hotel Del Luna 2019 IU drama</code>\n\n"
-                            "<b>❌ Avoid:</b>\n"
-                            "• Just typing drama name\n"
-                            "• Using only Korean characters\n"
-                            "• Requesting without details\n\n"
-                            "<b>📱 Request Methods:</b>\n"
-                            "1. <code>@myKdrama_bot request [drama name]</code>\n"
-                            "2. Private message: <code>/req [drama name]</code>\n"
-                            "3. Use request button in search results\n\n"
-                            "<b>⏱️ Processing Time:</b>\n"
-                            "• Popular dramas: 6-12 hours\n"
-                            "• Rare content: 1-3 days\n"
-                            "• Very old content: 3-7 days\n\n"
-                            "💡 <b>Pro Tip:</b> Check spelling and try different name variations before requesting!",
+                message_text="🎬 <b>K-Drama Requests - Quick Start</b>\n\n"
+                             "1. Private message the bot\n"
+                             "2. Type: /kdrama [drama name]\n"
+                             "3. Confirm your request\n"
+                             "4. Wait for admin approval\n"
+                             "5. Get notified when added!\n\n"
+                             "<b>Commands:</b>\n"
+                             "- /kdrama - Make new request\n"
+                             "- /kdrama_status - Check your requests\n"
+                             "- /request - Alternative command\n\n"                      
+                             "<b>Limits:</b>\n"
+                             "- 5 requests per day\n"
+                             "- 10 minute cooldown between requests\n",
                 parse_mode=enums.ParseMode.HTML
             ),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📝 Request Now", url=f"https://t.me/myKdrama_bot?start=req")],
                 [InlineKeyboardButton("🔍 Search First", switch_inline_query="")],
-                [InlineKeyboardButton("📊 Request Status", url="https://t.me/your_channel")]
             ])
         )
         
@@ -278,52 +259,32 @@ async def show_request_help(query: InlineQuery, search_query: str):
             title="📝 How to Request K-Dramas",
             description="Complete guide to requesting missing content",
             input_message_content=InputTextMessageContent(
-                message_text="📝 <b>K-Drama Request Guide</b>\n\n"
-                            "<b>🎯 Perfect Request Format:</b>\n"
-                            "• <code>@myKdrama_bot request [Drama Name Year]</code>\n"
-                            "• Example: <code>@myKdrama_bot request Goblin 2016</code>\n\n"
-                            "<b>✨ What to Include:</b>\n"
-                            "🎬 Full drama title (English preferred)\n"
-                            "📅 Release year\n"
-                            "📺 Episode count\n"
-                            "🎭 Main actors (optional)\n"
-                            "💎 Quality preference (720p/1080p)\n\n"
-                            "<b>🔥 Popular Request Examples:</b>\n"
-                            "• <code>request Hometown Cha Cha Cha 2021</code>\n"
-                            "• <code>request Business Proposal 2022</code>\n"
-                            "• <code>request Twenty Five Twenty One</code>\n"
-                            "• <code>request Our Blues 2022 20 episodes</code>\n\n"
-                            "<b>📊 Request Categories:</b>\n"
-                            "🆕 <b>Recent Dramas:</b> 2022-2024 (Fast processing)\n"
-                            "🔥 <b>Popular Classics:</b> 2015-2021 (Medium wait)\n"
-                            "📜 <b>Vintage Content:</b> Pre-2015 (Longer wait)\n"
-                            "🎬 <b>Movies:</b> Korean films (Any year)\n\n"
-                            "<b>⚡ Quick Request Tips:</b>\n"
-                            "• Search first to avoid duplicates\n"
-                            "• Use English titles when possible\n"
-                            "• Include alternative names\n"
-                            "• Be patient - quality takes time!\n\n"
-                            "<b>🎉 Success Rate: 95%</b>\n"
-                            "Most requested dramas are added within 48 hours!",
+                message_text="🎬 <b>K-Drama Requests - Quick Start</b>\n\n"
+                             "1. Private message the bot\n"
+                             "2. Type: /kdrama [drama name]\n"
+                             "3. Confirm your request\n"
+                             "4. Wait for admin approval\n"
+                             "5. Get notified when added!\n\n"
+                             "<b>Commands:</b>\n"
+                             "- /kdrama - Make new request\n"
+                             "- /kdrama_status - Check your requests\n"
+                             "- /request - Alternative command\n\n"                      
+                             "<b>Limits:</b>\n"
+                             "- 5 requests per day\n"
+                             "- 10 minute cooldown between requests\n",
                 parse_mode=enums.ParseMode.HTML
             ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📝 Quick Request", url=f"https://t.me/myKdrama_bot?start=quickreq")],
+                [InlineKeyboardButton("📝 Quick Request", url=f"https://t.me/myKdrama_bot?start=req")],
                 [InlineKeyboardButton("🔍 Search First", switch_inline_query="")],
                 [
-                    InlineKeyboardButton("📊 Request Queue", url="https://t.me/your_channel"),
+                    InlineKeyboardButton("📊 Request Queue", url="https://t.me/+5oPx_k2OQNQxZmY1"),
                     InlineKeyboardButton("💬 Support", url="https://t.me/your_admin")
                 ]
             ])
         )
         
-        # Add example requests
-        example_requests = [
-            ("Business Proposal 2022", "Popular rom-com with Kim Sejeong"),
-            ("Our Blues 2022", "20-episode slice of life drama"),
-            ("Twenty Five Twenty One", "Youth romance with Kim Tae-ri"),
-            ("Hometown Cha Cha Cha", "Seaside romance with Shin Min-a")
-        ]
+        # Add example reques
         
         results = [request_help_result]
         
@@ -498,7 +459,7 @@ async def handle_inline_file_request(bot, query):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔍 Search More", switch_inline_query="")],
-                    [InlineKeyboardButton("📝 Request Drama", switch_inline_query="request")],
+                    [InlineKeyboardButton("📝 Request Drama", switch_inline_query="req")],
                     [InlineKeyboardButton("📢 Share Bot", url="https://t.me/share/url?url=https://t.me/myKdrama_bot")]
                 ])
             )

@@ -11,7 +11,7 @@ from pyrogram.types import (
 from pyrogram.errors import QueryIdInvalid
 from database.ia_filterdb import get_search_results  # Your existing search function
 from utils import get_size, is_subscribed, get_poster  # Your existing utility functions
-import script
+from Script import script
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ async def inline_search(bot, query: InlineQuery):
             return
         
         # Handle special commands
-        if search_query.lower().startswith(('help', 'start', 'info')):
+        if search_query.lower().startswith(('start')):
             await show_inline_help(query)
             return
         

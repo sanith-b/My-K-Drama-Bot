@@ -710,26 +710,39 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
+    import re
+    import asyncio
+    # Split callback data
     _, id, user = query.data.split('#')
+    # Access control: Only the intended user can trigger the callback
     if int(user) != 0 and query.from_user.id != int(user):
         return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+    # Fetch movie title via poster function
     movies = await get_poster(id, id=True)
     movie = movies.get('title')
+    # Clean up movie title formatting
     movie = re.sub(r"[:-]", " ", movie)
     movie = re.sub(r"\s+", " ", movie).strip()
     await query.answer(script.TOP_ALRT_MSG)
+    # Search results based on cleaned title
     files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
     if files:
+        # If results found, call auto_filter with results tuple
         k = (movie, files, offset, total_results)
         await auto_filter(bot, query, k)
     else:
+        # No results: inform admin & user
         reqstr1 = query.from_user.id if query.from_user else 0
         reqstr = await bot.get_users(reqstr1)
         if NO_RESULTS_MSG:
-            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
+            await bot.send_message(
+                chat_id=BIN_CHANNEL,
+                text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie)
+            )
         contact_admin_button = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
-        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
+            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]]
+        )
+        k = await query.message.edit(script.MVE_NT_FND, reply_markup=contact_admin_button)
         await asyncio.sleep(10)
         await k.delete()
                 

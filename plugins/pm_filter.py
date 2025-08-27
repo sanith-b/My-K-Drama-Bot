@@ -28,48 +28,98 @@ import string
 import tracemalloc
 import logging
 from pyrogram.errors.exceptions.bad_request_400 import PeerIdInvalid
-
 tracemalloc.start()
-
 TIMEZONE = "Asia/Kolkata"
 BUTTON = {}
 BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client, message):
-    bot_id = client.me.id
-    if EMOJI_MODE:
-        try:
-            await message.react(emoji=random.choice(REACTIONS))
-        except Exception:
-            pass
-    maintenance_mode = await db.get_maintenance_status(bot_id)
-    if maintenance_mode and message.from_user.id not in ADMINS:
-        await message.reply_text(f"ɪ ᴀᴍ ᴄᴜʀʀᴇɴᴛʟʏ ᴜɴᴅᴇʀ ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ 🛠️. ɪ ᴡɪʟʟ ʙᴇ ʙᴀᴄᴋ ꜱᴏᴏɴ 🔜", disable_web_page_preview=True)
-        return
-    await silentdb.update_top_messages(message.from_user.id, message.text)
-    if message.chat.id != SUPPORT_CHAT_ID:
-        settings = await get_settings(message.chat.id)
-        if settings['auto_ffilter']:
-            if re.search(r'https?://\S+|www\.\S+|t\.me/\S+', message.text):
-                if await is_check_admin(client, message.chat.id, message.from_user.id):
-                    return
-                return await message.delete()   
-            await auto_filter(client, message)
-    else:
-        search = message.text
-        temp_files, temp_offset, total_results = await get_search_results(chat_id=message.chat.id, query=search.lower(), offset=0, filter=True)
-        if total_results == 0:
+    try:
+        bot_id = client.me.id
+        
+        # Handle emoji reactions
+        if EMOJI_MODE:
+            try:
+                await message.react(emoji=random.choice(REACTIONS))
+            except Exception as e:
+                logger.debug(f"Failed to react to message: {e}")
+                pass
+        
+        # Check maintenance mode
+        maintenance_mode = await db.get_maintenance_status(bot_id)
+        if maintenance_mode and (not message.from_user or message.from_user.id not in ADMINS):
+            await message.reply_text(
+                f"ɪ ᴀᴍ ᴄᴜʀʀᴇɴᴛʟʏ ᴜɴᴅᴇʀ ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ 🛠️. ɪ ᴡɪʟʟ ʙᴇ ʙᴀᴄᴋ ꜱᴏᴏɴ 🔜", 
+                disable_web_page_preview=True
+            )
             return
+
+        # FIXED: Add null check before accessing message.from_user.id
+        if message.from_user and hasattr(message.from_user, 'id') and message.text:
+            try:
+                await silentdb.update_top_messages(message.from_user.id, message.text)
+            except Exception as e:
+                logger.error(f"Failed to update top messages: {e}")
+                # Continue execution even if this fails
+
+        # Handle different chat types
+        if message.chat.id != SUPPORT_CHAT_ID:
+            settings = await get_settings(message.chat.id)
+            if settings['auto_ffilter']:
+                # Check for URLs and delete if not admin
+                if re.search(r'https?://\S+|www\.\S+|t\.me/\S+', message.text):
+                    # Only check admin if message has from_user
+                    if message.from_user and await is_check_admin(client, message.chat.id, message.from_user.id):
+                        return
+                    try:
+                        return await message.delete()
+                    except Exception as e:
+                        logger.error(f"Failed to delete message with URL: {e}")
+                        return
+                        
+                # Process auto filter
+                await auto_filter(client, message)
         else:
-            return await message.reply_text(f"<b>✨ Hello {message.from_user.mention}! \n\n✅ Your request is already available. \n📂 Files found: {str(total_results)} \n🔍 Search: <code>{search}</code> \n‼️ This is a <u>support group</u>, so you can’t get files from here. \n\n📝 Search Hear 👇</b>",   
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Join & Explore 🔍", url=GRP_LNK)]]))
+            # Handle support chat
+            search = message.text
+            temp_files, temp_offset, total_results = await get_search_results(
+                chat_id=message.chat.id, 
+                query=search.lower(), 
+                offset=0, 
+                filter=True
+            )
+            
+            if total_results == 0:
+                return
+            else:
+                # Safe mention handling
+                user_mention = message.from_user.mention if message.from_user else "User"
+                
+                return await message.reply_text(
+                    f"<b>✨ Hello {user_mention}! \n\n"
+                    f"✅ Your request is already available. \n"
+                    f"📂 Files found: {str(total_results)} \n"
+                    f"🔍 Search: <code>{search}</code> \n"
+                    f"‼️ This is a <u>support group</u>, so you can't get files from here. \n\n"
+                    f"📝 Search Hear 👇</b>",   
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⚡ Join & Explore 🔍", url=GRP_LNK)]
+                    ])
+                )
+
+    except AttributeError as e:
+        logger.error(f"AttributeError in give_filter: {e}")
+        logger.error(f"Message from_user: {getattr(message, 'from_user', 'None')}")
+        logger.error(f"Message chat: {getattr(message, 'chat', 'None')}")
+    except Exception as e:
+        logger.error(f"Unexpected error in give_filter: {e}")
+        logger.error(f"Full traceback: {tracemalloc.get_traced_memory()}")
+        # Don't return here, let the function complete gracefully
 
 
 @Client.on_message(filters.private & filters.text & filters.incoming)

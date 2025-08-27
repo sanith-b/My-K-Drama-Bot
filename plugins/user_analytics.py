@@ -480,7 +480,7 @@ class AnalyticsHandlers:
     def register_handlers(self, app: Client):
         """Register all analytics handlers"""
         
-        @app.on_message(filters.command("analytics") & filters.private)
+        @app.on_message(filters.command("analytics", "status") & filters.private)
         async def analytics_command(client: Client, message: Message):
             """Handle /analytics command"""
             if message.from_user.id not in self.admin_ids:

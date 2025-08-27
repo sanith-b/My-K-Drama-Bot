@@ -24,7 +24,7 @@ import threading, time, requests
 from logging_helper import LOGGER
 
 # Import the analytics module
-from user_analytics import initialize_analytics, track_user_activity, track_new_user, mark_user_blocked
+from plugins.user_analytics import initialize_analytics, track_user_activity, track_new_user, mark_user_blocked
 
 botStartTime = time.time()
 ppath = "plugins/*.py"

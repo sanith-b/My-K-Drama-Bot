@@ -710,39 +710,26 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
-    import re
-    import asyncio
-    # Split callback data
     _, id, user = query.data.split('#')
-    # Access control: Only the intended user can trigger the callback
     if int(user) != 0 and query.from_user.id != int(user):
         return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-    # Fetch movie title via poster function
     movies = await get_poster(id, id=True)
     movie = movies.get('title')
-    # Clean up movie title formatting
     movie = re.sub(r"[:-]", " ", movie)
     movie = re.sub(r"\s+", " ", movie).strip()
     await query.answer(script.TOP_ALRT_MSG)
-    # Search results based on cleaned title
     files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
     if files:
-        # If results found, call auto_filter with results tuple
         k = (movie, files, offset, total_results)
         await auto_filter(bot, query, k)
     else:
-        # No results: inform admin & user
         reqstr1 = query.from_user.id if query.from_user else 0
         reqstr = await bot.get_users(reqstr1)
         if NO_RESULTS_MSG:
-            await bot.send_message(
-                chat_id=BIN_CHANNEL,
-                text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie)
-            )
+            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
         contact_admin_button = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]]
-        )
-        k = await query.message.edit(script.MVE_NT_FND, reply_markup=contact_admin_button)
+            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
+        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
         await asyncio.sleep(10)
         await k.delete()
                 
@@ -1909,1138 +1896,262 @@ async def cb_handler(client: Client, query: CallbackQuery):
     await query.answer(MSG_ALRT)
 
     
-import asyncio
-import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from pyrogram import enums
-import logging
-
-# User data storage (in production, use proper database)
-user_preferences = {}
-user_premium_data = {}
-user_search_history = {}
-user_favorites = {}
-
-# Premium plan configurations
-PREMIUM_PLANS = {
-    'basic': {
-        'name': 'Basic Premium',
-        'price': 50,  # Telegram Stars
-        'duration_days': 30,
-        'features': {
-            'max_downloads_per_day': 50,
-            'concurrent_downloads': 2,
-            'high_quality_streaming': True,
-            'ad_free': True,
-            'priority_search': True,
-            'download_history': True,
-            'favorites_limit': 100,
-            'batch_download': False,
-            'exclusive_content': False
-        }
-    },
-    'premium': {
-        'name': 'Premium Plus',
-        'price': 100,  # Telegram Stars
-        'duration_days': 30,
-        'features': {
-            'max_downloads_per_day': 200,
-            'concurrent_downloads': 5,
-            'high_quality_streaming': True,
-            'ad_free': True,
-            'priority_search': True,
-            'download_history': True,
-            'favorites_limit': 500,
-            'batch_download': True,
-            'exclusive_content': True,
-            'custom_quality_selection': True,
-            'offline_download': True
-        }
-    },
-    'vip': {
-        'name': 'VIP Access',
-        'price': 200,  # Telegram Stars
-        'duration_days': 30,
-        'features': {
-            'max_downloads_per_day': -1,  # Unlimited
-            'concurrent_downloads': 10,
-            'high_quality_streaming': True,
-            'ad_free': True,
-            'priority_search': True,
-            'download_history': True,
-            'favorites_limit': -1,  # Unlimited
-            'batch_download': True,
-            'exclusive_content': True,
-            'custom_quality_selection': True,
-            'offline_download': True,
-            'early_access': True,
-            'personal_recommendations': True
-        }
-    }
-}
-
-class UserPreferences:
-    """Handle user preferences and personalization"""
-    
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-        self.preferences = user_preferences.get(user_id, self._get_default_preferences())
-    
-    def _get_default_preferences(self) -> Dict:
-        """Get default user preferences"""
-        return {
-            'preferred_quality': 'auto',  # auto, 1080p, 720p, 480p
-            'preferred_language': 'english',
-            'auto_download': False,
-            'notifications': True,
-            'search_suggestions': True,
-            'adult_content': False,
-            'preferred_genres': [],
-            'blacklisted_genres': [],
-            'max_file_size_mb': 2048,  # 2GB default
-            'auto_delete_downloads': False,
-            'theme': 'default',  # default, dark, minimal
-            'results_per_page': 10,
-            'show_imdb_info': True,
-            'show_file_details': True,
-            'quick_access_favorites': True
-        }
-    
-    async def save_preferences(self):
-        """Save user preferences to storage"""
-        user_preferences[self.user_id] = self.preferences
-        # In production, save to database
-        await self._save_to_database()
-    
-    async def _save_to_database(self):
-        """Save to actual database (implement based on your DB)"""
-        try:
-            # Example for MongoDB
-            # await db.user_preferences.update_one(
-            #     {'user_id': self.user_id},
-            #     {'$set': self.preferences},
-            #     upsert=True
-            # )
-            pass
-        except Exception as e:
-            logging.error(f"Failed to save preferences for user {self.user_id}: {e}")
-    
-    def get_preference(self, key: str, default=None):
-        """Get specific preference value"""
-        return self.preferences.get(key, default)
-    
-    async def set_preference(self, key: str, value: Any):
-        """Set specific preference value"""
-        self.preferences[key] = value
-        await self.save_preferences()
-    
-    async def add_to_search_history(self, query: str, results_count: int):
-        """Add search to user history"""
-        if self.user_id not in user_search_history:
-            user_search_history[self.user_id] = []
-        
-        history_entry = {
-            'query': query,
-            'timestamp': datetime.now(),
-            'results_count': results_count
-        }
-        
-        user_search_history[self.user_id].insert(0, history_entry)
-        
-        # Keep only last 50 searches
-        if len(user_search_history[self.user_id]) > 50:
-            user_search_history[self.user_id] = user_search_history[self.user_id][:50]
-    
-    async def get_search_history(self, limit: int = 10) -> List[Dict]:
-        """Get user search history"""
-        return user_search_history.get(self.user_id, [])[:limit]
-    
-    async def add_to_favorites(self, file_id: str, file_name: str, file_size: int):
-        """Add file to favorites"""
-        if self.user_id not in user_favorites:
-            user_favorites[self.user_id] = []
-        
-        # Check if already in favorites
-        for fav in user_favorites[self.user_id]:
-            if fav['file_id'] == file_id:
-                return False  # Already exists
-        
-        # Check premium limits
-        premium_data = await get_user_premium_data(self.user_id)
-        max_favorites = premium_data['features']['favorites_limit']
-        
-        if max_favorites != -1 and len(user_favorites[self.user_id]) >= max_favorites:
-            return False  # Limit exceeded
-        
-        favorite_entry = {
-            'file_id': file_id,
-            'file_name': file_name,
-            'file_size': file_size,
-            'added_date': datetime.now(),
-            'access_count': 0
-        }
-        
-        user_favorites[self.user_id].append(favorite_entry)
-        return True
-    
-    async def remove_from_favorites(self, file_id: str):
-        """Remove file from favorites"""
-        if self.user_id in user_favorites:
-            user_favorites[self.user_id] = [
-                fav for fav in user_favorites[self.user_id] 
-                if fav['file_id'] != file_id
-            ]
-    
-    async def get_favorites(self) -> List[Dict]:
-        """Get user favorites"""
-        return user_favorites.get(self.user_id, [])
-    
-    async def get_personalized_recommendations(self) -> List[str]:
-        """Get personalized recommendations based on history"""
-        history = await self.get_search_history(20)
-        favorites = await self.get_favorites()
-        
-        # Simple recommendation algorithm
-        recent_searches = [entry['query'] for entry in history]
-        favorite_names = [fav['file_name'] for fav in favorites]
-        
-        # Extract genres/keywords from search history
-        keywords = []
-        for search in recent_searches + favorite_names:
-            # Extract meaningful words (implement better NLP here)
-            words = search.lower().split()
-            keywords.extend([word for word in words if len(word) > 3])
-        
-        # Return most frequent keywords as recommendations
-        from collections import Counter
-        common_keywords = Counter(keywords).most_common(5)
-        return [keyword for keyword, count in common_keywords]
-
-class PremiumManager:
-    """Handle premium subscriptions and features"""
-    
-    @staticmethod
-    async def get_user_premium_data(user_id: int) -> Dict:
-        """Get user premium data"""
-        if user_id not in user_premium_data:
-            user_premium_data[user_id] = {
-                'plan': 'free',
-                'expires_at': None,
-                'features': {
-                    'max_downloads_per_day': 10,
-                    'concurrent_downloads': 1,
-                    'high_quality_streaming': False,
-                    'ad_free': False,
-                    'priority_search': False,
-                    'download_history': False,
-                    'favorites_limit': 10,
-                    'batch_download': False,
-                    'exclusive_content': False
-                },
-                'usage_stats': {
-                    'downloads_today': 0,
-                    'last_reset_date': datetime.now().date(),
-                    'total_downloads': 0,
-                    'active_downloads': 0
-                }
-            }
-        
-        return user_premium_data[user_id]
-    
-    @staticmethod
-    async def is_premium_user(user_id: int) -> bool:
-        """Check if user has active premium subscription"""
-        premium_data = await PremiumManager.get_user_premium_data(user_id)
-        
-        if premium_data['plan'] == 'free':
-            return False
-        
-        if premium_data['expires_at'] and premium_data['expires_at'] < datetime.now():
-            # Premium expired, downgrade to free
-            await PremiumManager.downgrade_to_free(user_id)
-            return False
-        
-        return True
-    
-    @staticmethod
-    async def upgrade_user_premium(user_id: int, plan: str) -> bool:
-        """Upgrade user to premium plan"""
-        if plan not in PREMIUM_PLANS:
-            return False
-        
-        premium_data = await PremiumManager.get_user_premium_data(user_id)
-        plan_config = PREMIUM_PLANS[plan]
-        
-        premium_data.update({
-            'plan': plan,
-            'expires_at': datetime.now() + timedelta(days=plan_config['duration_days']),
-            'features': plan_config['features'].copy(),
-            'upgraded_at': datetime.now()
-        })
-        
-        user_premium_data[user_id] = premium_data
-        
-        # Save to database
-        await PremiumManager._save_premium_data(user_id, premium_data)
-        return True
-    
-    @staticmethod
-    async def _save_premium_data(user_id: int, data: Dict):
-        """Save premium data to database"""
-        try:
-            # Implement database save
-            pass
-        except Exception as e:
-            logging.error(f"Failed to save premium data for user {user_id}: {e}")
-    
-    @staticmethod
-    async def downgrade_to_free(user_id: int):
-        """Downgrade user to free plan"""
-        premium_data = await PremiumManager.get_user_premium_data(user_id)
-        premium_data.update({
-            'plan': 'free',
-            'expires_at': None,
-            'features': {
-                'max_downloads_per_day': 10,
-                'concurrent_downloads': 1,
-                'high_quality_streaming': False,
-                'ad_free': False,
-                'priority_search': False,
-                'download_history': False,
-                'favorites_limit': 10,
-                'batch_download': False,
-                'exclusive_content': False
-            }
-        })
-        
-        user_premium_data[user_id] = premium_data
-        await PremiumManager._save_premium_data(user_id, premium_data)
-    
-    @staticmethod
-    async def check_daily_limit(user_id: int) -> bool:
-        """Check if user has exceeded daily download limit"""
-        premium_data = await PremiumManager.get_user_premium_data(user_id)
-        usage_stats = premium_data['usage_stats']
-        
-        # Reset daily count if new day
-        today = datetime.now().date()
-        if usage_stats['last_reset_date'] != today:
-            usage_stats['downloads_today'] = 0
-            usage_stats['last_reset_date'] = today
-        
-        max_downloads = premium_data['features']['max_downloads_per_day']
-        if max_downloads == -1:  # Unlimited
-            return True
-        
-        return usage_stats['downloads_today'] < max_downloads
-    
-    @staticmethod
-    async def increment_download_count(user_id: int):
-        """Increment user's daily download count"""
-        premium_data = await PremiumManager.get_user_premium_data(user_id)
-        premium_data['usage_stats']['downloads_today'] += 1
-        premium_data['usage_stats']['total_downloads'] += 1
-
-# Enhanced auto_filter with user preferences and premium features
-async def enhanced_auto_filter(client, msg, spoll=False):
-    """Enhanced auto filter with user preferences and premium features"""
-    user_id = msg.from_user.id if msg.from_user else 0
-    user_prefs = UserPreferences(user_id)
-    
-    # Check if user has premium access for priority search
-    is_premium = await PremiumManager.is_premium_user(user_id)
-    premium_data = await PremiumManager.get_user_premium_data(user_id)
-    
+async def auto_filter(client, msg, spoll=False):
+    curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
     if not spoll:
         message = msg
-        
-        # Early returns for invalid messages
-        if not message.text or message.text.startswith("/"):
+        if message.text.startswith("/"): return
+        if re.findall("((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
             return
-        
-        if len(message.text) >= 100:
-            return
-        
-        # Check adult content filter
-        if not user_prefs.get_preference('adult_content', False):
-            adult_keywords = ['adult', 'xxx', '18+', 'porn', 'sex']
-            if any(keyword in message.text.lower() for keyword in adult_keywords):
-                await message.reply("🚫 Adult content is disabled in your preferences.")
-                return
-        
-        # Clean search query
-        search = await clean_search_query(message.text)
-        if not search:
-            return
-        
-        # Priority queue for premium users
-        if is_premium and premium_data['features']['priority_search']:
-            search_delay = 0  # No delay for premium
+        if len(message.text) < 100:
+            search = await replace_words(message.text)		
+            search = search.lower()
+            search = search.replace("-", " ")
+            search = search.replace(":","")
+            search = re.sub(r'\s+', ' ', search).strip()
+            m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query : <i>{search}...</i></b>', reply_to_message_id=message.id)
+            files, offset, total_results = await get_search_results(message.chat.id ,search, offset=0, filter=True)
+            settings = await get_settings(message.chat.id)
+            if not files:
+                if settings["spell_check"]:
+                    ai_sts = await m.edit('🤖 Hang tight… AI is checking your spelling!')
+                    is_misspelled = await ai_spell_check(chat_id = message.chat.id,wrong_name=search)
+                    if is_misspelled:
+                        await ai_sts.edit(f'<b>🔹 My pick<code> {is_misspelled}</code> \nOn the search for <code>{is_misspelled}</code></b>')
+                        await asyncio.sleep(2)
+                        message.text = is_misspelled
+                        await ai_sts.delete()
+                        return await auto_filter(client, message)
+                    await ai_sts.delete()
+                    return await advantage_spell_chok(client, message)
         else:
-            search_delay = 1  # 1 second delay for free users
-            await asyncio.sleep(search_delay)
-        
-        # Show enhanced searching message
-        search_msg = f'🔍 Searching... {message.from_user.mention}'
-        if is_premium:
-            search_msg += ' [⭐ Premium]'
-        search_msg += f' | Query: <code>{search}</code>'
-        
-        m = await message.reply_text(search_msg, reply_to_message_id=message.id)
-        
-        # Add to search history
-        await user_prefs.add_to_search_history(search, 0)
-        
-        # Get search results with user preferences
-        files, offset, total_results = await get_filtered_search_results(
-            message.chat.id, search, user_prefs, is_premium
-        )
-        
-        # Update search history with results count
-        await user_prefs.add_to_search_history(search, len(files))
-        
-        settings = await get_settings(message.chat.id)
-        
-        if not files:
-            return await handle_no_results_enhanced(client, message, m, search, settings, user_prefs)
-    
+            return
     else:
         message = msg.message.reply_to_message
         search, files, offset, total_results = spoll
-        m = await message.reply_text(
-            f'🔍 Searching... {message.from_user.mention} | Query: <code>{search}</code>',
-            reply_to_message_id=message.id
-        )
+        m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query :<i>{search}...</i></b>', reply_to_message_id=message.id)
         settings = await get_settings(message.chat.id)
         await msg.message.delete()
-    
-    # Generate enhanced response with premium features
-    await generate_enhanced_search_response(
-        client, message, m, search, files, offset, total_results, 
-        settings, user_prefs, is_premium, premium_data
-    )
-
-async def get_filtered_search_results(chat_id: int, search: str, user_prefs: UserPreferences, is_premium: bool):
-    """Get search results filtered by user preferences"""
-    # Get base search results
-    files, offset, total_results = await get_search_results(chat_id, search, offset=0, filter=True)
-    
-    if not files:
-        return files, offset, total_results
-    
-    # Apply user preference filters
-    filtered_files = []
-    max_file_size = user_prefs.get_preference('max_file_size_mb', 2048) * 1024 * 1024  # Convert to bytes
-    preferred_quality = user_prefs.get_preference('preferred_quality', 'auto')
-    
-    for file in files:
-        # Size filter
-        if hasattr(file, 'file_size') and file.file_size > max_file_size:
-            continue
-        
-        # Quality filter (basic implementation)
-        if preferred_quality != 'auto' and hasattr(file, 'file_name'):
-            file_name = file.file_name.lower()
-            if preferred_quality == '1080p' and '1080p' not in file_name and '1080' not in file_name:
-                continue
-            elif preferred_quality == '720p' and '720p' not in file_name and '720' not in file_name:
-                continue
-            elif preferred_quality == '480p' and '480p' not in file_name and '480' not in file_name:
-                continue
-        
-        # Exclusive content filter for premium users
-        if not is_premium:
-            # Skip exclusive content for free users
-            if hasattr(file, 'is_exclusive') and file.is_exclusive:
-                continue
-        
-        filtered_files.append(file)
-    
-    # Limit results based on user preference
-    results_per_page = user_prefs.get_preference('results_per_page', 10)
-    if len(filtered_files) > results_per_page:
-        filtered_files = filtered_files[:results_per_page]
-    
-    return filtered_files, offset, len(filtered_files)
-
-async def generate_enhanced_search_response(client, message, m, search, files, offset, total_results, 
-                                          settings, user_prefs: UserPreferences, is_premium: bool, premium_data: Dict):
-    """Generate enhanced search response with premium features and user preferences"""
     key = f"{message.chat.id}-{message.id}"
-    
-    # Store data
     FRESH[key] = search
     temp.GETALL[key] = files
     temp.SHORT[message.from_user.id] = message.chat.id
-    
-    # Create enhanced buttons
-    buttons = await create_enhanced_file_buttons(files, settings, key, offset, total_results, 
-                                               message, user_prefs, is_premium, premium_data)
-    
-    # Get IMDB data based on user preference
-    imdb_data = None
-    if settings.get("imdb", False) and user_prefs.get_preference('show_imdb_info', True) and files:
-        try:
-            imdb_data = await get_poster(search, file=files[0].file_name)
-        except Exception as e:
-            logging.warning(f"IMDB fetch failed: {e}")
-    
-    # Generate enhanced caption
-    caption = await generate_enhanced_caption(message, search, files, settings, imdb_data, 
-                                            user_prefs, is_premium, premium_data)
-    
-    # Send response
-    await send_enhanced_response(m, caption, buttons, imdb_data, settings, message, 
-                               user_prefs, is_premium)
-
-async def create_enhanced_file_buttons(files, settings, key, offset, total_results, message,
-                                     user_prefs: UserPreferences, is_premium: bool, premium_data: Dict):
-    """Create enhanced inline keyboard buttons with premium features"""
-    buttons = []
-    
-    # File buttons with enhanced display
-    if settings.get('button', True):
-        for file in files:
-            # Enhanced button text with premium indicators
-            button_text = get_enhanced_file_display_name(file, user_prefs, is_premium)
-            
-            # Add premium exclusive indicator
-            if hasattr(file, 'is_exclusive') and file.is_exclusive:
-                button_text = f"⭐ {button_text}"
-            
-            buttons.append([
-                InlineKeyboardButton(
-                    text=button_text,
-                    callback_data=f'file#{file.file_id}'
-                )
-            ])
-    
-    # Enhanced filter buttons
-    filter_buttons = [
-        InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-        InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
-    ]
-    
-    # Add premium-only filters
-    if is_premium:
-        filter_buttons.extend([
-            InlineKeyboardButton("🎭 Genre", callback_data=f"genres#{key}#0"),
-            InlineKeyboardButton("📅 Year", callback_data=f"years#{key}#0")
-        ])
-    
-    buttons.insert(0, filter_buttons)
-    
-    # Action buttons
-    action_buttons = [
-        InlineKeyboardButton("🚀 Send All", callback_data=f"sendfiles#{key}")
-    ]
-    
-    # Premium features
-    if is_premium:
-        if premium_data['features']['batch_download']:
-            action_buttons.append(
-                InlineKeyboardButton("📦 Batch Download", callback_data=f"batch#{key}")
-            )
-        if premium_data['features']['offline_download']:
-            action_buttons.append(
-                InlineKeyboardButton("💾 Offline", callback_data=f"offline#{key}")
-            )
-    
-    buttons.insert(1, action_buttons)
-    
-    # User preference buttons
-    pref_buttons = [
-        InlineKeyboardButton("❤️ Add to Favorites", callback_data=f"addfav#{key}"),
-        InlineKeyboardButton("⚙️ Preferences", callback_data=f"userprefs#{message.from_user.id}")
-    ]
-    buttons.insert(2, pref_buttons)
-    
-    # Premium upgrade button for free users
-    if not is_premium:
-        buttons.append([
-            InlineKeyboardButton("⭐ Upgrade to Premium", callback_data="upgrade_premium")
-        ])
-    
-    # Pagination with enhanced display
-    if offset:
-        req = message.from_user.id if message.from_user else 0
-        per_page = user_prefs.get_preference('results_per_page', 10)
-        total_pages = math.ceil(int(total_results) / per_page)
-        
-        buttons.append([
-            InlineKeyboardButton("📄 Page", callback_data="pages"),
-            InlineKeyboardButton(f"1/{total_pages}", callback_data="pages"),
-            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{offset}")
-        ])
-    else:
-        buttons.append([
-            InlineKeyboardButton("🚫 That's all!", callback_data="pages")
-        ])
-    
-    return buttons
-
-def get_enhanced_file_display_name(file, user_prefs: UserPreferences, is_premium: bool):
-    """Generate enhanced display name with user preferences"""
-    try:
-        # Base information
-        size = silent_size(file.file_size) if hasattr(file, 'file_size') else ""
-        name = clean_filename(file.file_name) if hasattr(file, 'file_name') else "Unknown"
-        
-        # Show file details based on user preference
-        if user_prefs.get_preference('show_file_details', True):
-            tag = extract_tag(file.file_name) if hasattr(file, 'file_name') else ""
-            return f"{size} | {tag} {name}"
-        else:
-            return f"{size} | {name}"
-            
-    except Exception:
-        return "File"
-
-async def generate_enhanced_caption(message, search, files, settings, imdb_data, 
-                                  user_prefs: UserPreferences, is_premium: bool, premium_data: Dict):
-    """Generate enhanced caption with user preferences and premium features"""
-    # Premium status indicator
-    status_indicator = "⭐ Premium User" if is_premium else "Free User"
-    
-    if imdb_data and user_prefs.get_preference('show_imdb_info', True):
-        # Enhanced IMDB template
-        template = script.IMDB_TEMPLATE_TXT if 'script' in globals() else "{title}\n{plot}"
-        caption = f"<b>[{status_indicator}]</b>\n\n"
-        caption += template.format(**imdb_data, query=search)
-        
-        # Add premium features info
-        if is_premium:
-            caption += f"\n\n<b>📊 Your Premium Stats:</b>"
-            caption += f"\n• Downloads today: {premium_data['usage_stats']['downloads_today']}"
-            daily_limit = premium_data['features']['max_downloads_per_day']
-            if daily_limit != -1:
-                caption += f"/{daily_limit}"
-            caption += f"\n• Plan expires: {premium_data['expires_at'].strftime('%d %b %Y') if premium_data['expires_at'] else 'Never'}"
-        
-        temp.IMDB_CAP[message.from_user.id] = caption
-    else:
-        # Simple enhanced caption
-        greeting = "Hey!" if settings.get('button', True) else "✨ Hello!"
-        caption = f"<b><blockquote>{greeting} {message.from_user.mention} [{status_indicator}]</blockquote>\n\n"
-        caption += f"📂 Results for: <code>{search}</code></b>\n\n"
-        
-        # Add personalized recommendations for premium users
-        if is_premium and premium_data['features']['personal_recommendations']:
-            recommendations = await user_prefs.get_personalized_recommendations()
-            if recommendations:
-                caption += f"<b>🎯 Recommended for you:</b> {', '.join(recommendations[:3])}\n\n"
-    
-    # Add file list if not in button mode
-    if not settings.get('button', True):
-        for i, file in enumerate(files, 1):
-            size = get_size(file.file_size) if hasattr(file, 'file_size') else "Unknown"
-            name = clean_filename(file.file_name) if hasattr(file, 'file_name') else "File"
-            file_link = f"https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}"
-            
-            # Premium exclusive indicator
-            exclusive = "⭐ " if (hasattr(file, 'is_exclusive') and file.is_exclusive) else ""
-            caption += f"<b>{i}. {exclusive}<a href='{file_link}'>{size} | {name}</a></b>\n\n"
-    
-    return caption
-
-# User preference management commands
-async def handle_user_preferences_callback(client, callback_query):
-    """Handle user preferences callback"""
-    user_id = callback_query.from_user.id
-    user_prefs = UserPreferences(user_id)
-    
-    # Create preferences menu
-    buttons = [
-        [
-            InlineKeyboardButton("🎬 Quality Preference", callback_data=f"pref_quality_{user_id}"),
-            InlineKeyboardButton("🌐 Language", callback_data=f"pref_language_{user_id}")
-        ],
-        [
-            InlineKeyboardButton("📊 Results per page", callback_data=f"pref_results_{user_id}"),
-            InlineKeyboardButton("📏 Max file size", callback_data=f"pref_size_{user_id}")
-        ],
-        [
-            InlineKeyboardButton("❤️ My Favorites", callback_data=f"show_favorites_{user_id}"),
-            InlineKeyboardButton("📚 Search History", callback_data=f"show_history_{user_id}")
-        ],
-        [
-            InlineKeyboardButton("🔞 Adult Content", callback_data=f"pref_adult_{user_id}"),
-            InlineKeyboardButton("🔔 Notifications", callback_data=f"pref_notifications_{user_id}")
-        ],
-        [
-            InlineKeyboardButton("❌ Close", callback_data="close_data")
-        ]
-    ]
-    
-    is_premium = await PremiumManager.is_premium_user(user_id)
-    status = "⭐ Premium" if is_premium else "Free"
-    
-    caption = f"<b>⚙️ User Preferences [{status}]</b>\n\n"
-    caption += f"<b>Current Settings:</b>\n"
-    caption += f"• Quality: {user_prefs.get_preference('preferred_quality', 'auto').title()}\n"
-    caption += f"• Language: {user_prefs.get_preference('preferred_language', 'english').title()}\n"
-    caption += f"• Results per page: {user_prefs.get_preference('results_per_page', 10)}\n"
-    caption += f"• Max file size: {user_prefs.get_preference('max_file_size_mb', 2048)}MB\n"
-    caption += f"• Adult content: {'Enabled' if user_prefs.get_preference('adult_content', False) else 'Disabled'}\n"
-    
-    await callback_query.message.edit_text(
-        text=caption,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=enums.ParseMode.HTML
-    )
-
-# Premium upgrade handling
-async def handle_premium_upgrade_callback(client, callback_query):
-    """Handle premium upgrade callback"""
-    user_id = callback_query.from_user.id
-    
-    # Create premium plans menu
-    buttons = []
-    for plan_id, plan_config in PREMIUM_PLANS.items():
-        button_text = f"{plan_config['name']} - {plan_config['price']} ⭐"
-        buttons.append([
-            InlineKeyboardButton(
-                text=button_text,
-                callback_data=f"buy_premium_{plan_id}_{user_id}"
-            )
-        ])
-    
-    buttons.append([
-        InlineKeyboardButton("❌ Cancel", callback_data="close_data")
-    ])
-    
-    caption = "<b>⭐ Premium Plans</b>\n\n"
-    
-    for plan_id, plan_config in PREMIUM_PLANS.items():
-        caption += f"<b>{plan_config['name']} - {plan_config['price']} Telegram Stars</b>\n"
-        features = plan_config['features']
-        
-        if features['max_downloads_per_day'] == -1:
-            caption += "• Unlimited downloads per day\n"
-        else:
-            caption += f"• {features['max_downloads_per_day']} downloads per day\n"
-        
-        caption += f"• {features['concurrent_downloads']} concurrent downloads\n"
-        
-        if features['ad_free']:
-            caption += "• Ad-free experience\n"
-        if features['high_quality_streaming']:
-            caption += "• High quality streaming\n"
-        if features['batch_download']:
-            caption += "• Batch download support\n"
-        if features['exclusive_content']:
-            caption += "• Access to exclusive content\n"
-        if features['personal_recommendations']:
-            caption += "• AI-powered recommendations\n"
-        
-        caption += f"• Up to {features['favorites_limit'] if features['favorites_limit'] != -1 else 'unlimited'} favorites\n"
-        caption += f"• Valid for {plan_config['duration_days']} days\n\n"
-    
-    await callback_query.message.edit_text(
-        text=caption,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=enums.ParseMode.HTML
-    )
-
-async def handle_buy_premium_callback(client, callback_query, plan_id: str):
-    """Handle premium purchase callback"""
-    user_id = callback_query.from_user.id
-    
-    if plan_id not in PREMIUM_PLANS:
-        await callback_query.answer("❌ Invalid plan selected!", show_alert=True)
-        return
-    
-    plan_config = PREMIUM_PLANS[plan_id]
-    
-    # Create Telegram Stars payment invoice
-    try:
-        # Create invoice buttons
-        buttons = [
+    if settings.get('button'):
+        btn = [
             [
                 InlineKeyboardButton(
-                    "⭐ Pay with Telegram Stars",
-                    callback_data=f"pay_stars_{plan_id}_{user_id}"
-                )
-            ],
-            [
-                InlineKeyboardButton("❌ Cancel", callback_data="upgrade_premium")
+                    text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
+                ),
             ]
+            for file in files
         ]
-        
-        caption = f"<b>💳 Purchase {plan_config['name']}</b>\n\n"
-        caption += f"<b>Price:</b> {plan_config['price']} Telegram Stars\n"
-        caption += f"<b>Duration:</b> {plan_config['duration_days']} days\n\n"
-        caption += "<b>Payment Methods:</b>\n"
-        caption += "• Telegram Stars (Instant activation)\n"
-        caption += "• Crypto payments (Contact admin)\n\n"
-        caption += "<i>Click 'Pay with Telegram Stars' to complete your purchase!</i>"
-        
-        await callback_query.message.edit_text(
-            text=caption,
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode=enums.ParseMode.HTML
+        btn.insert(0, 
+            [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+            ]
         )
-        
-    except Exception as e:
-        logging.error(f"Payment creation error: {e}")
-        await callback_query.answer("❌ Payment system temporarily unavailable!", show_alert=True)
-
-async def process_telegram_stars_payment(client, callback_query, plan_id: str):
-    """Process Telegram Stars payment"""
-    user_id = callback_query.from_user.id
-    plan_config = PREMIUM_PLANS[plan_id]
-    
-    try:
-        # Create Telegram Stars invoice
-        from pyrogram.types import LabeledPrice
-        
-        # In real implementation, use Telegram's payment API
-        # This is a simplified version
-        
-        # For now, simulate successful payment (implement actual payment logic)
-        success = await simulate_payment_processing(user_id, plan_config['price'])
-        
-        if success:
-            # Upgrade user to premium
-            await PremiumManager.upgrade_user_premium(user_id, plan_id)
+        btn.insert(1, [
+            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
             
-            success_message = f"🎉 <b>Payment Successful!</b>\n\n"
-            success_message += f"✅ {plan_config['name']} activated!\n"
-            success_message += f"💫 Your premium features are now available\n"
-            success_message += f"📅 Expires: {(datetime.now() + timedelta(days=plan_config['duration_days'])).strftime('%d %b %Y')}\n\n"
-            success_message += "<i>Thank you for supporting our bot! 🙏</i>"
-            
-            await callback_query.message.edit_text(
-                text=success_message,
-                parse_mode=enums.ParseMode.HTML
-            )
-            
-            # Send welcome message with premium features
-            await send_premium_welcome_message(client, user_id, plan_config)
-            
-        else:
-            await callback_query.answer("❌ Payment failed. Please try again!", show_alert=True)
-            
-    except Exception as e:
-        logging.error(f"Payment processing error: {e}")
-        await callback_query.answer("❌ Payment processing failed!", show_alert=True)
-
-async def simulate_payment_processing(user_id: int, amount: int) -> bool:
-    """Simulate payment processing (replace with actual payment gateway)"""
-    # In production, integrate with actual payment processors:
-    # - Telegram Stars API
-    # - Stripe
-    # - PayPal
-    # - Cryptocurrency payments
-    
-    # For demo purposes, always return True
-    # In real implementation, handle actual payment verification
-    await asyncio.sleep(2)  # Simulate processing time
-    return True
-
-async def send_premium_welcome_message(client, user_id: int, plan_config: dict):
-    """Send welcome message to new premium user"""
-    welcome_text = f"🌟 <b>Welcome to {plan_config['name']}!</b>\n\n"
-    welcome_text += "<b>🎁 Your Premium Features:</b>\n"
-    
-    features = plan_config['features']
-    if features['max_downloads_per_day'] == -1:
-        welcome_text += "• ♾️ Unlimited downloads per day\n"
-    else:
-        welcome_text += f"• 📥 {features['max_downloads_per_day']} downloads per day\n"
-    
-    welcome_text += f"• ⚡ {features['concurrent_downloads']} concurrent downloads\n"
-    
-    if features['ad_free']:
-        welcome_text += "• 🚫 Ad-free experience\n"
-    if features['high_quality_streaming']:
-        welcome_text += "• 🎬 High quality streaming\n"
-    if features['priority_search']:
-        welcome_text += "• 🔥 Priority search (faster results)\n"
-    if features['batch_download']:
-        welcome_text += "• 📦 Batch download support\n"
-    if features['exclusive_content']:
-        welcome_text += "• ⭐ Access to exclusive content\n"
-    if features['personal_recommendations']:
-        welcome_text += "• 🎯 AI-powered recommendations\n"
-    if features['offline_download']:
-        welcome_text += "• 💾 Offline download support\n"
-    
-    welcome_text += f"• ❤️ Up to {features['favorites_limit'] if features['favorites_limit'] != -1 else 'unlimited'} favorites\n"
-    welcome_text += "\n<i>Enjoy your premium experience! 🚀</i>"
-    
-    try:
-        await client.send_message(user_id, welcome_text, parse_mode=enums.ParseMode.HTML)
-    except Exception as e:
-        logging.error(f"Failed to send welcome message to {user_id}: {e}")
-
-# Favorites management
-async def handle_add_to_favorites(client, callback_query, key: str):
-    """Handle add to favorites callback"""
-    user_id = callback_query.from_user.id
-    user_prefs = UserPreferences(user_id)
-    
-    # Get files from temp storage
-    files = temp.GETALL.get(key, [])
-    if not files:
-        await callback_query.answer("❌ Files not found!", show_alert=True)
-        return
-    
-    added_count = 0
-    for file in files:
-        success = await user_prefs.add_to_favorites(
-            file.file_id, 
-            getattr(file, 'file_name', 'Unknown'),
-            getattr(file, 'file_size', 0)
-        )
-        if success:
-            added_count += 1
-    
-    if added_count > 0:
-        await callback_query.answer(f"❤️ Added {added_count} files to favorites!", show_alert=True)
-    else:
-        await callback_query.answer("⚠️ Files already in favorites or limit exceeded!", show_alert=True)
-
-async def handle_show_favorites(client, callback_query):
-    """Show user's favorite files"""
-    user_id = callback_query.from_user.id
-    user_prefs = UserPreferences(user_id)
-    favorites = await user_prefs.get_favorites()
-    
-    if not favorites:
-        await callback_query.answer("💔 No favorites yet! Add some files to see them here.", show_alert=True)
-        return
-    
-    # Create favorites list
-    buttons = []
-    caption = f"<b>❤️ Your Favorites ({len(favorites)} files)</b>\n\n"
-    
-    for i, fav in enumerate(favorites[-10:], 1):  # Show last 10 favorites
-        file_size = get_size(fav['file_size']) if fav['file_size'] else "Unknown"
-        file_name = clean_filename(fav['file_name'])[:30] + "..." if len(fav['file_name']) > 30 else clean_filename(fav['file_name'])
-        
-        caption += f"{i}. <b>{file_name}</b> ({file_size})\n"
-        caption += f"   Added: {fav['added_date'].strftime('%d %b %Y')}\n\n"
-        
-        buttons.append([
-            InlineKeyboardButton(
-                f"📥 {file_name}",
-                callback_data=f"fav_download_{fav['file_id']}"
-            ),
-            InlineKeyboardButton(
-                "🗑️",
-                callback_data=f"fav_remove_{fav['file_id']}_{user_id}"
-            )
         ])
-    
-    buttons.append([
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"show_favorites_{user_id}"),
-        InlineKeyboardButton("❌ Close", callback_data="close_data")
-    ])
-    
-    await callback_query.message.edit_text(
-        text=caption,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=enums.ParseMode.HTML
-    )
-
-async def handle_show_search_history(client, callback_query):
-    """Show user's search history"""
-    user_id = callback_query.from_user.id
-    user_prefs = UserPreferences(user_id)
-    history = await user_prefs.get_search_history(15)
-    
-    if not history:
-        await callback_query.answer("📚 No search history yet!", show_alert=True)
-        return
-    
-    caption = f"<b>📚 Your Recent Searches</b>\n\n"
-    buttons = []
-    
-    for i, entry in enumerate(history, 1):
-        time_str = entry['timestamp'].strftime('%d %b, %H:%M')
-        caption += f"{i}. <code>{entry['query']}</code>\n"
-        caption += f"   {time_str} • {entry['results_count']} results\n\n"
-        
-        # Add quick search button for recent queries
-        if i <= 5:  # Only first 5 searches
-            buttons.append([
-                InlineKeyboardButton(
-                    f"🔍 Search '{entry['query'][:20]}...' again",
-                    callback_data=f"research_{entry['query'][:50]}_{user_id}"
-                )
-            ])
-    
-    buttons.append([
-        InlineKeyboardButton("🧹 Clear History", callback_data=f"clear_history_{user_id}"),
-        InlineKeyboardButton("❌ Close", callback_data="close_data")
-    ])
-    
-    await callback_query.message.edit_text(
-        text=caption,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=enums.ParseMode.HTML
-    )
-
-# Premium status and usage tracking
-async def handle_premium_status(client, message):
-    """Show premium status and usage statistics"""
-    user_id = message.from_user.id
-    is_premium = await PremiumManager.is_premium_user(user_id)
-    premium_data = await PremiumManager.get_user_premium_data(user_id)
-    
-    if not is_premium:
-        # Show upgrade options for free users
-        caption = "<b>📊 Account Status</b>\n\n"
-        caption += "🆓 <b>Free Plan</b>\n\n"
-        caption += f"<b>Today's Usage:</b>\n"
-        caption += f"• Downloads: {premium_data['usage_stats']['downloads_today']}/10\n"
-        caption += f"• Active downloads: {premium_data['usage_stats']['active_downloads']}/1\n\n"
-        caption += "<b>🔒 Premium Features:</b>\n"
-        caption += "• Unlimited downloads\n"
-        caption += "• High quality streaming\n"
-        caption += "• Ad-free experience\n"
-        caption += "• Batch downloads\n"
-        caption += "• Exclusive content\n"
-        caption += "• Priority support\n\n"
-        caption += "<i>Upgrade to unlock all features! 🚀</i>"
-        
-        buttons = [
-            [InlineKeyboardButton("⭐ Upgrade to Premium", callback_data="upgrade_premium")],
-            [InlineKeyboardButton("❌ Close", callback_data="close_data")]
-        ]
     else:
-        # Show premium status
-        expires_at = premium_data['expires_at']
-        days_left = (expires_at - datetime.now()).days if expires_at else -1
-        
-        caption = "<b>📊 Premium Account Status</b>\n\n"
-        caption += f"⭐ <b>{premium_data['plan'].title()} Plan</b>\n\n"
-        
-        if expires_at:
-            caption += f"<b>⏰ Expires:</b> {expires_at.strftime('%d %b %Y')}\n"
-            caption += f"<b>📅 Days left:</b> {days_left} days\n\n"
-        
-        caption += f"<b>📊 Usage Statistics:</b>\n"
-        caption += f"• Downloads today: {premium_data['usage_stats']['downloads_today']}"
-        
-        daily_limit = premium_data['features']['max_downloads_per_day']
-        if daily_limit != -1:
-            caption += f"/{daily_limit}"
+        btn = []
+        btn.insert(0, 
+            [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+            ]
+        )
+        btn.insert(1, [
+            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+            
+        ])
+    if offset != "":
+        req = message.from_user.id if message.from_user else 0
+        try:
+            if settings['max_btn']:
+                btn.append(
+                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+                )
+            else:
+                btn.append(
+                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+                )
+        except KeyError:
+            await save_group_settings(message.chat.id, 'max_btn', True)
+            btn.append(
+                [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+            )
+    else:
+        btn.append(
+            [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
+        )
+    imdb = await get_poster(search, file=(files[0]).file_name) if settings["imdb"] else None
+    cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+    time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
+    remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+    TEMPLATE = script.IMDB_TEMPLATE_TXT
+    if imdb:
+        cap = TEMPLATE.format(
+            qurey=search,
+            title=imdb['title'],
+            votes=imdb['votes'],
+            aka=imdb["aka"],
+            seasons=imdb["seasons"],
+            box_office=imdb['box_office'],
+            localized_title=imdb['localized_title'],
+            kind=imdb['kind'],
+            imdb_id=imdb["imdb_id"],
+            cast=imdb["cast"],
+            runtime=imdb["runtime"],
+            countries=imdb["countries"],
+            certificates=imdb["certificates"],
+            languages=imdb["languages"],
+            director=imdb["director"],
+            writer=imdb["writer"],
+            producer=imdb["producer"],
+            composer=imdb["composer"],
+            cinematographer=imdb["cinematographer"],
+            music_team=imdb["music_team"],
+            distributors=imdb["distributors"],
+            release_date=imdb['release_date'],
+            year=imdb['year'],
+            genres=imdb['genres'],
+            poster=imdb['poster'],
+            plot=imdb['plot'],
+            rating=imdb['rating'],
+            url=imdb['url'],
+            **locals()
+        )
+        temp.IMDB_CAP[message.from_user.id] = cap
+        if not settings.get('button'):
+            for file_num, file in enumerate(files, start=1):
+                cap += f"\n\n<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}</a></b>"
+    else:
+        if settings.get('button'):
+            cap =f"<b><blockquote>Hey!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"
         else:
-            caption += " (Unlimited)"
-        
-        caption += f"\n• Total downloads: {premium_data['usage_stats']['total_downloads']}\n"
-        caption += f"• Active downloads: {premium_data['usage_stats']['active_downloads']}"
-        caption += f"/{premium_data['features']['concurrent_downloads']}\n\n"
-        
-        caption += "<b>🎁 Active Features:</b>\n"
-        features = premium_data['features']
-        if features['high_quality_streaming']:
-            caption += "• 🎬 High quality streaming\n"
-        if features['ad_free']:
-            caption += "• 🚫 Ad-free experience\n"
-        if features['batch_download']:
-            caption += "• 📦 Batch downloads\n"
-        if features['exclusive_content']:
-            caption += "• ⭐ Exclusive content\n"
-        if features['personal_recommendations']:
-            caption += "• 🎯 AI recommendations\n"
-        
-        buttons = [
-            [InlineKeyboardButton("🔄 Extend Subscription", callback_data="upgrade_premium")],
-            [InlineKeyboardButton("❌ Close", callback_data="close_data")]
-        ]
-        
-        # Add renewal reminder for soon-to-expire subscriptions
-        if days_left <= 7 and days_left > 0:
-            caption += f"\n⚠️ <i>Your subscription expires in {days_left} days! Consider renewing.</i>"
-    
-    await message.reply_text(
-        text=caption,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=enums.ParseMode.HTML
+            cap =f"<b><blockquote>✨ Hello!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"            
+            for file_num, file in enumerate(files, start=1):
+                cap += f"<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}\n\n</a></b>"                
+    if imdb and imdb.get('poster'):
+        try:
+            hehe = await m.edit_photo(photo=imdb.get('poster'), caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+            try:
+                if settings['auto_delete']:
+                    await asyncio.sleep(DELETE_TIME)
+                    await hehe.delete()
+                    await message.delete()
+            except KeyError:
+                await save_group_settings(message.chat.id, 'auto_delete', True)
+                await asyncio.sleep(DELETE_TIME)
+                await hehe.delete()
+                await message.delete()
+        except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
+            pic = imdb.get('poster')
+            poster = pic.replace('.jpg', "._V1_UX360.jpg") 
+            hmm = await m.edit_photo(photo=poster, caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+            try:
+               if settings['auto_delete']:
+                    await asyncio.sleep(DELETE_TIME)
+                    await hmm.delete()
+                    await message.delete()
+            except KeyError:
+                await save_group_settings(message.chat.id, 'auto_delete', True)
+                await asyncio.sleep(DELETE_TIME)
+                await hmm.delete()
+                await message.delete()
+        except Exception as e:
+            LOGGER.error(e)
+            fek = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+            try:
+                if settings['auto_delete']:
+                    await asyncio.sleep(DELETE_TIME)
+                    await fek.delete()
+                    await message.delete()
+            except KeyError:
+                await save_group_settings(message.chat.id, 'auto_delete', True)
+                await asyncio.sleep(DELETE_TIME)
+                await fek.delete()
+                await message.delete()
+    else:
+        fuk = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+        try:
+            if settings['auto_delete']:
+                await asyncio.sleep(DELETE_TIME)
+                await fuk.delete()
+                await message.delete()
+        except KeyError:
+            await save_group_settings(message.chat.id, 'auto_delete', True)
+            await asyncio.sleep(DELETE_TIME)
+            await fuk.delete()
+            await message.delete()
+
+async def ai_spell_check(chat_id, wrong_name):
+    async def search_movie(wrong_name):
+        search_results = imdb.search_movie(wrong_name)
+        movie_list = [movie['title'] for movie in search_results]
+        return movie_list
+    movie_list = await search_movie(wrong_name)
+    if not movie_list:
+        return
+    for _ in range(5):
+        closest_match = process.extractOne(wrong_name, movie_list)
+        if not closest_match or closest_match[1] <= 80:
+            return 
+        movie = closest_match[0]
+        files, offset, total_results = await get_search_results(chat_id=chat_id, query=movie)
+        if files:
+            return movie
+        movie_list.remove(movie)
+
+async def advantage_spell_chok(client, message):
+    mv_id = message.id
+    search = message.text
+    chat_id = message.chat.id
+    settings = await get_settings(chat_id)
+    query = re.sub(
+        r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
+        "", message.text, flags=re.IGNORECASE)
+    query = query.strip() + " movie"
+    try:
+        movies = await get_poster(search, bulk=True)
+    except:
+        k = await message.reply(script.I_CUDNT.format(message.from_user.mention))
+        await asyncio.sleep(60)
+        await k.delete()
+        try:
+            await message.delete()
+        except:
+            pass
+        return
+    if not movies:
+        google = search.replace(" ", "+")
+        button = [[
+            InlineKeyboardButton("💡 Spell Check? Google it! 🔎", url=f"https://www.google.com/search?q={google}")
+        ]]
+        k = await message.reply_text(text=script.I_CUDNT.format(search), reply_markup=InlineKeyboardMarkup(button))
+        await asyncio.sleep(60)
+        await k.delete()
+        try:
+            await message.delete()
+        except:
+            pass
+        return
+    user = message.from_user.id if message.from_user else 0
+    buttons = [[
+        InlineKeyboardButton(text=movie.get('title'), callback_data=f"spol#{movie.movieID}#{user}")
+    ]
+        for movie in movies
+    ]
+    buttons.append(
+        [InlineKeyboardButton(text="❌ Close", callback_data='close_data')]
     )
-
-# Download tracking for premium users
-async def track_download(user_id: int, file_id: str):
-    """Track download for usage statistics"""
-    # Check daily limit
-    can_download = await PremiumManager.check_daily_limit(user_id)
-    if not can_download:
-        return False, "Daily download limit exceeded! Upgrade to premium for more downloads."
-    
-    # Check concurrent downloads
-    premium_data = await PremiumManager.get_user_premium_data(user_id)
-    if premium_data['usage_stats']['active_downloads'] >= premium_data['features']['concurrent_downloads']:
-        return False, f"Maximum concurrent downloads ({premium_data['features']['concurrent_downloads']}) reached!"
-    
-    # Increment counters
-    await PremiumManager.increment_download_count(user_id)
-    premium_data['usage_stats']['active_downloads'] += 1
-    
-    return True, "Download started successfully!"
-
-async def finish_download_tracking(user_id: int, file_id: str):
-    """Mark download as finished"""
-    premium_data = await PremiumManager.get_user_premium_data(user_id)
-    if premium_data['usage_stats']['active_downloads'] > 0:
-        premium_data['usage_stats']['active_downloads'] -= 1
-
-# Command handlers for the new features
-async def handle_premium_command(client, message):
-    """Handle /premium command"""
-    await handle_premium_status(client, message)
-
-async def handle_preferences_command(client, message):
-    """Handle /preferences command"""
-    user_id = message.from_user.id
-    user_prefs = UserPreferences(user_id)
-    
-    # Create preferences callback
-    callback_query_mock = type('CallbackQuery', (), {
-        'from_user': message.from_user,
-        'message': message
-    })()
-    
-    await handle_user_preferences_callback(client, callback_query_mock)
-
-# Callback query router for new features
-async def handle_enhanced_callbacks(client, callback_query):
-    """Enhanced callback query handler"""
-    data = callback_query.data
-    
-    if data.startswith("userprefs_"):
-        await handle_user_preferences_callback(client, callback_query)
-    elif data == "upgrade_premium":
-        await handle_premium_upgrade_callback(client, callback_query)
-    elif data.startswith("buy_premium_"):
-        plan_id = data.split("_")[2]
-        await handle_buy_premium_callback(client, callback_query, plan_id)
-    elif data.startswith("pay_stars_"):
-        plan_id = data.split("_")[2]
-        await process_telegram_stars_payment(client, callback_query, plan_id)
-    elif data.startswith("addfav_"):
-        key = data.split("_")[1]
-        await handle_add_to_favorites(client, callback_query, key)
-    elif data.startswith("show_favorites_"):
-        await handle_show_favorites(client, callback_query)
-    elif data.startswith("show_history_"):
-        await handle_show_search_history(client, callback_query)
-    elif data.startswith("fav_remove_"):
-        file_id = data.split("_")[2]
-        user_id = int(data.split("_")[3])
-        user_prefs = UserPreferences(user_id)
-        await user_prefs.remove_from_favorites(file_id)
-        await callback_query.answer("🗑️ Removed from favorites!")
-        await handle_show_favorites(client, callback_query)
-    elif data.startswith("research_"):
-        # Handle research from history
-        query = data.split("_", 1)[1].split("_")[0]
-        # Trigger new search with the historical query
-        await callback_query.answer(f"🔍 Searching for '{query}'...")
-        # Implementation depends on your message handling system
-    
-    # Add more callback handlers as needed...
+    d = await message.reply_text(text=script.CUDNT_FND.format(message.from_user.mention), reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=message.id)
+    await asyncio.sleep(60)
+    await d.delete()
+    try:
+        await message.delete()
+    except:
+        pass

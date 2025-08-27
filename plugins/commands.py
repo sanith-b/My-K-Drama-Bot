@@ -7,7 +7,7 @@ import asyncio
 import time
 import pytz
 from logging_helper import LOGGER
-from .pm_filter import * 
+from .pm_filter import auto_filter 
 from Script import script
 from datetime import datetime
 from database.refer import referdb
@@ -391,18 +391,7 @@ async def start(client, message):
     await msg.delete()
     await k.edit_text("<b>✨ File Deleted!</b>")
     return
-@Client.on_callback_query()
-async def callback_query_handler(client, callback_query):
-    await handle_enhanced_callbacks(client, callback_query)
 
-# Add new commands
-@Client.on_message(filters.command("premium"))
-async def premium_command(client, message):
-    await handle_premium_command(client, message)
-
-@Client.on_message(filters.command("preferences"))
-async def preferences_command(client, message):
-    await handle_preferences_command(client, message)
 @Client.on_message(filters.command('logs') & filters.user(ADMINS))
 async def log_file(bot, message):
     """Send log file"""

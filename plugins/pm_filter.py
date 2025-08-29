@@ -14,7 +14,7 @@ import pyrogram
 from info import *
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, WebAppInfo
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid
+from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
 from utils import *
 from fuzzywuzzy import process
 from database.users_chats_db import db
@@ -26,6 +26,17 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
+from typing import List, Dict, Optional, Tuple
+import logging
+from fuzzywuzzy import process
+from pyrogram import enums
+
+import aiohttp
+import json
+from dataclasses import dataclass
+from enum import Enum
+
+
 
 tracemalloc.start()
 
@@ -35,6 +46,7 @@ BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
 
+LOGGER = logging.getLogger(__name__)
 
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client, message):
@@ -1896,262 +1908,609 @@ async def cb_handler(client: Client, query: CallbackQuery):
     await query.answer(MSG_ALRT)
 
     
-async def auto_filter(client, msg, spoll=False):
-    curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-    if not spoll:
-        message = msg
-        if message.text.startswith("/"): return
-        if re.findall("((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
-            return
-        if len(message.text) < 100:
-            search = await replace_words(message.text)		
-            search = search.lower()
-            search = search.replace("-", " ")
-            search = search.replace(":","")
-            search = re.sub(r'\s+', ' ', search).strip()
-            m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query : <i>{search}...</i></b>', reply_to_message_id=message.id)
-            files, offset, total_results = await get_search_results(message.chat.id ,search, offset=0, filter=True)
-            settings = await get_settings(message.chat.id)
-            if not files:
-                if settings["spell_check"]:
-                    ai_sts = await m.edit('🤖 Hang tight… AI is checking your spelling!')
-                    is_misspelled = await ai_spell_check(chat_id = message.chat.id,wrong_name=search)
-                    if is_misspelled:
-                        await ai_sts.edit(f'<b>🔹 My pick<code> {is_misspelled}</code> \nOn the search for <code>{is_misspelled}</code></b>')
-                        await asyncio.sleep(2)
-                        message.text = is_misspelled
-                        await ai_sts.delete()
-                        return await auto_filter(client, message)
-                    await ai_sts.delete()
-                    return await advantage_spell_chok(client, message)
+class ContentType(Enum):
+    KDRAMA = "k-drama"
+    MOVIE = "movie"
+    VARIETY_SHOW = "variety"
+    DOCUMENTARY = "documentary"
+
+@dataclass
+class SearchResult:
+    file_id: str
+    file_name: str
+    file_size: int
+    quality: str = ""
+    language: str = ""
+    episode: str = ""
+    season: str = ""
+    content_type: ContentType = ContentType.KDRAMA
+
+class KDramaBot:
+    def __init__(self):
+        self.search_cache = {}
+        self.user_preferences = {}
+        self.trending_cache = {}
+        
+    async def auto_filter(self, client, msg, spoll=False):
+        """Enhanced auto filter with K-Drama specific features"""
+        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+        
+        if not spoll:
+            message = msg
+            if message.text.startswith("/"): 
+                return
+                
+            # Enhanced regex to handle K-Drama specific terms
+            if re.findall(r"((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
+                return
+                
+            if len(message.text) < 100:
+                # Enhanced search processing for K-Drama content
+                search = await self.process_kdrama_search(message.text)
+                
+                # Show typing indicator for better UX
+                await client.send_chat_action(message.chat.id, enums.ChatAction.TYPING)
+                
+                m = await message.reply_text(
+                    f'<b>🔍 Hey {message.from_user.mention}!\n'
+                    f'Searching K-Drama: <code>{search}</code>\n'
+                    f'⏱️ Please wait...</b>', 
+                    reply_to_message_id=message.id
+                )
+                
+                # Enhanced search with content type detection
+                files, offset, total_results = await self.enhanced_search_results(
+                    message.chat.id, search, offset=0, filter=True
+                )
+                
+                settings = await get_settings(message.chat.id)
+                
+                if not files:
+                    if settings.get("spell_check", True):
+                        await self.handle_no_results(client, message, search, m)
+                        return
         else:
-            return
-    else:
-        message = msg.message.reply_to_message
-        search, files, offset, total_results = spoll
-        m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query :<i>{search}...</i></b>', reply_to_message_id=message.id)
-        settings = await get_settings(message.chat.id)
-        await msg.message.delete()
-    key = f"{message.chat.id}-{message.id}"
-    FRESH[key] = search
-    temp.GETALL[key] = files
-    temp.SHORT[message.from_user.id] = message.chat.id
-    if settings.get('button'):
-        btn = [
-            [
-                InlineKeyboardButton(
-                    text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
-                ),
-            ]
-            for file in files
+            message = msg.message.reply_to_message
+            search, files, offset, total_results = spoll
+            m = await message.reply_text(
+                f'<b>🎬 Searching: <code>{search}</code></b>', 
+                reply_to_message_id=message.id
+            )
+            settings = await get_settings(message.chat.id)
+            await msg.message.delete()
+
+        # Generate enhanced results with K-Drama specific formatting
+        await self.display_results(client, message, m, search, files, offset, total_results, settings)
+
+    async def process_kdrama_search(self, text: str) -> str:
+        """Enhanced search processing for K-Drama content"""
+        search = await replace_words(text)
+        search = search.lower()
+        
+        # K-Drama specific replacements
+        kdrama_replacements = {
+            "kdrama": "korean drama",
+            "k-drama": "korean drama",
+            "k drama": "korean drama",
+            "ep": "episode",
+            "eps": "episodes",
+            "sub": "subtitle",
+            "subs": "subtitles",
+            "eng sub": "english subtitle",
+            "hindi dub": "hindi dubbed",
+            "tamil dub": "tamil dubbed"
+        }
+        
+        for old, new in kdrama_replacements.items():
+            search = search.replace(old, new)
+            
+        search = search.replace("-", " ")
+        search = search.replace(":", "")
+        search = re.sub(r'\s+', ' ', search).strip()
+        
+        return search
+
+    async def enhanced_search_results(self, chat_id: int, query: str, offset: int = 0, filter: bool = True) -> Tuple[List[SearchResult], str, int]:
+        """Enhanced search with content type detection and quality filtering"""
+        # Get basic search results
+        files, offset, total_results = await get_search_results(chat_id, query, offset, filter)
+        
+        # Convert to enhanced SearchResult objects
+        enhanced_files = []
+        for file in files:
+            result = SearchResult(
+                file_id=file.file_id,
+                file_name=file.file_name,
+                file_size=file.file_size,
+                quality=self.extract_quality(file.file_name),
+                language=self.extract_language(file.file_name),
+                episode=self.extract_episode(file.file_name),
+                season=self.extract_season(file.file_name),
+                content_type=self.detect_content_type(file.file_name)
+            )
+            enhanced_files.append(result)
+            
+        return enhanced_files, offset, total_results
+
+    def extract_quality(self, filename: str) -> str:
+        """Extract video quality from filename"""
+        quality_patterns = {
+            r'(?i)(4k|2160p)': '4K',
+            r'(?i)(1080p|fhd)': '1080p',
+            r'(?i)(720p|hd)': '720p',
+            r'(?i)(480p|sd)': '480p',
+            r'(?i)(360p)': '360p'
+        }
+        
+        for pattern, quality in quality_patterns.items():
+            if re.search(pattern, filename):
+                return quality
+        return "HD"
+
+    def extract_language(self, filename: str) -> str:
+        """Extract language from filename"""
+        lang_patterns = {
+            r'(?i)(eng|english)': '🇺🇸 English',
+            r'(?i)(kor|korean)': '🇰🇷 Korean',
+            r'(?i)(hin|hindi)': '🇮🇳 Hindi',
+            r'(?i)(tam|tamil)': '🇮🇳 Tamil',
+            r'(?i)(tel|telugu)': '🇮🇳 Telugu',
+            r'(?i)(mal|malayalam)': '🇮🇳 Malayalam'
+        }
+        
+        for pattern, lang in lang_patterns.items():
+            if re.search(pattern, filename):
+                return lang
+        return "🇰🇷 Korean"
+
+    def extract_episode(self, filename: str) -> str:
+        """Extract episode number from filename"""
+        ep_patterns = [
+            r'(?i)ep?\.?\s*(\d+)',
+            r'(?i)episode\s*(\d+)',
+            r'(?i)e(\d+)',
+            r'(?i)\s(\d+)\s'
         ]
-        btn.insert(0, 
-            [
-                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-            ]
-        )
-        btn.insert(1, [
-            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-            
-        ])
-    else:
+        
+        for pattern in ep_patterns:
+            match = re.search(pattern, filename)
+            if match:
+                return f"EP {match.group(1)}"
+        return ""
+
+    def extract_season(self, filename: str) -> str:
+        """Extract season from filename"""
+        season_patterns = [
+            r'(?i)s(\d+)',
+            r'(?i)season\s*(\d+)'
+        ]
+        
+        for pattern in season_patterns:
+            match = re.search(pattern, filename)
+            if match:
+                return f"S{match.group(1)}"
+        return ""
+
+    def detect_content_type(self, filename: str) -> ContentType:
+        """Detect content type from filename"""
+        filename_lower = filename.lower()
+        
+        if any(keyword in filename_lower for keyword in ['variety', 'show', 'running man', 'knowing bros']):
+            return ContentType.VARIETY_SHOW
+        elif any(keyword in filename_lower for keyword in ['documentary', 'docu']):
+            return ContentType.DOCUMENTARY
+        elif any(keyword in filename_lower for keyword in ['movie', 'film']):
+            return ContentType.MOVIE
+        else:
+            return ContentType.KDRAMA
+
+    async def generate_enhanced_buttons(self, files: List[SearchResult], key: str, settings: dict) -> List[List[InlineKeyboardButton]]:
+        """Generate enhanced buttons with K-Drama specific features"""
         btn = []
-        btn.insert(0, 
-            [
-                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-            ]
-        )
-        btn.insert(1, [
-            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+        
+        if settings.get('button'):
+            # File buttons with enhanced formatting
+            for file in files:
+                file_info = self.format_file_info(file)
+                btn.append([
+                    InlineKeyboardButton(
+                        text=file_info,
+                        callback_data=f'file#{file.file_id}'
+                    )
+                ])
+        
+        # Enhanced filter buttons
+        filter_buttons = [
+            InlineKeyboardButton("🎬 Quality", callback_data=f"qualities#{key}#0"),
+            InlineKeyboardButton("🌐 Language", callback_data=f"languages#{key}#0"),
+            InlineKeyboardButton("📺 Episode", callback_data=f"episodes#{key}#0")
+        ]
+        btn.insert(0, filter_buttons)
+        
+        # Action buttons
+        action_buttons = [
+            InlineKeyboardButton("📥 Send All", callback_data=f"sendfiles#{key}"),
+            InlineKeyboardButton("⭐ Add to Watchlist", callback_data=f"watchlist#{key}")
+        ]
+        btn.insert(1, action_buttons)
+        
+        # Quick access buttons
+        quick_buttons = [
+            InlineKeyboardButton("🔥 Trending", callback_data="trending_kdramas"),
+            InlineKeyboardButton("🎲 Random", callback_data="random_kdrama")
+        ]
+        btn.insert(2, quick_buttons)
+        
+        return btn
+
+    def format_file_info(self, file: SearchResult) -> str:
+        """Format file information for button display"""
+        size = silent_size(file.file_size)
+        name = clean_filename(file.file_name)
+        
+        info_parts = [size]
+        if file.quality:
+            info_parts.append(file.quality)
+        if file.episode:
+            info_parts.append(file.episode)
+        if file.language and file.language != "🇰🇷 Korean":
+            info_parts.append(file.language.split()[-1])
             
-        ])
-    if offset != "":
-        req = message.from_user.id if message.from_user else 0
+        info = " | ".join(info_parts)
+        
+        # Add content type emoji
+        type_emoji = {
+            ContentType.KDRAMA: "🎭",
+            ContentType.MOVIE: "🎬", 
+            ContentType.VARIETY_SHOW: "🎪",
+            ContentType.DOCUMENTARY: "📚"
+        }
+        
+        return f"{type_emoji.get(file.content_type, '🎭')} {info} | {name}"
+
+    async def handle_no_results(self, client, message, search: str, m):
+        """Enhanced no results handler with K-Drama specific suggestions"""
+        # Try AI spell check first
+        ai_sts = await m.edit('🤖 Checking spelling with AI...')
+        corrected = await self.ai_spell_check_kdrama(message.chat.id, search)
+        
+        if corrected:
+            await ai_sts.edit(f'<b>✅ AI Suggested: <code>{corrected}</code>\n🔍 Searching now...</b>')
+            await asyncio.sleep(2)
+            message.text = corrected
+            await ai_sts.delete()
+            return await self.auto_filter(client, message)
+            
+        await ai_sts.delete()
+        
+        # Show K-Drama specific suggestions
+        await self.show_kdrama_suggestions(client, message)
+
+    async def ai_spell_check_kdrama(self, chat_id: int, wrong_name: str) -> Optional[str]:
+        """AI spell check specifically for K-Drama titles"""
         try:
-            if settings['max_btn']:
-                btn.append(
-                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+            # Search K-Drama databases
+            kdrama_results = await self.search_kdrama_database(wrong_name)
+            
+            if not kdrama_results:
+                return None
+                
+            # Find closest match
+            closest_match = process.extractOne(wrong_name, kdrama_results)
+            
+            if closest_match and closest_match[1] > 75:  # 75% similarity threshold
+                # Verify if files exist for this title
+                files, _, _ = await get_search_results(chat_id, closest_match[0])
+                if files:
+                    return closest_match[0]
+                    
+        except Exception as e:
+            LOGGER.error(f"AI spell check error: {e}")
+            
+        return None
+
+    async def search_kdrama_database(self, query: str) -> List[str]:
+        """Search K-Drama database for similar titles"""
+        # This would integrate with K-Drama APIs like TMDB, MyDramaList, etc.
+        # For now, return a mock list
+        popular_kdramas = [
+            "Squid Game", "Crash Landing on You", "Goblin", "Descendants of the Sun",
+            "Hotel Del Luna", "It's Okay to Not Be Okay", "Start-Up", "True Beauty",
+            "Vincenzo", "Business Proposal", "Hometown's Embrace", "Twenty Five Twenty One",
+            "Our Beloved Summer", "Hometown Cha-Cha-Cha", "Red Sleeve", "Snowdrop"
+        ]
+        
+        # Simple fuzzy matching for demo
+        matches = process.extract(query, popular_kdramas, limit=10)
+        return [match[0] for match in matches if match[1] > 50]
+
+    async def show_kdrama_suggestions(self, client, message):
+        """Show K-Drama suggestions when no results found"""
+        search = message.text
+        
+        try:
+            # Get trending K-Dramas
+            trending = await self.get_trending_kdramas()
+            
+            if not trending:
+                # Fallback to Google search
+                google_url = f"https://www.google.com/search?q={search.replace(' ', '+')}+korean+drama"
+                button = [[
+                    InlineKeyboardButton("🔍 Search on Google", url=google_url),
+                    InlineKeyboardButton("📺 Browse K-Dramas", callback_data="browse_kdramas")
+                ]]
+                
+                k = await message.reply_text(
+                    text=f"<b>😔 Sorry, couldn't find '{search}'\n\n"
+                         f"🔍 Try searching with different keywords or check spelling</b>",
+                    reply_markup=InlineKeyboardMarkup(button)
                 )
             else:
-                btn.append(
-                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+                # Show trending suggestions
+                buttons = []
+                for drama in trending[:8]:  # Show top 8
+                    buttons.append([
+                        InlineKeyboardButton(
+                            text=f"🎭 {drama['title']}", 
+                            callback_data=f"search#{drama['title']}"
+                        )
+                    ])
+                
+                buttons.append([
+                    InlineKeyboardButton("🔍 Google Search", 
+                                       url=f"https://www.google.com/search?q={search.replace(' ', '+')}+korean+drama"),
+                    InlineKeyboardButton("🚫 Close", callback_data='close_data')
+                ])
+                
+                k = await message.reply_text(
+                    text=f"<b>😔 Couldn't find '{search}'\n\n"
+                         f"🔥 Try these trending K-Dramas instead:</b>",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    reply_to_message_id=message.id
                 )
-        except KeyError:
-            await save_group_settings(message.chat.id, 'max_btn', True)
-            btn.append(
-                [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
-            )
-    else:
-        btn.append(
-            [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
-        )
-    imdb = await get_poster(search, file=(files[0]).file_name) if settings["imdb"] else None
-    cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-    time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
-    remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
-    TEMPLATE = script.IMDB_TEMPLATE_TXT
-    if imdb:
-        cap = TEMPLATE.format(
-            qurey=search,
-            title=imdb['title'],
-            votes=imdb['votes'],
-            aka=imdb["aka"],
-            seasons=imdb["seasons"],
-            box_office=imdb['box_office'],
-            localized_title=imdb['localized_title'],
-            kind=imdb['kind'],
-            imdb_id=imdb["imdb_id"],
-            cast=imdb["cast"],
-            runtime=imdb["runtime"],
-            countries=imdb["countries"],
-            certificates=imdb["certificates"],
-            languages=imdb["languages"],
-            director=imdb["director"],
-            writer=imdb["writer"],
-            producer=imdb["producer"],
-            composer=imdb["composer"],
-            cinematographer=imdb["cinematographer"],
-            music_team=imdb["music_team"],
-            distributors=imdb["distributors"],
-            release_date=imdb['release_date'],
-            year=imdb['year'],
-            genres=imdb['genres'],
-            poster=imdb['poster'],
-            plot=imdb['plot'],
-            rating=imdb['rating'],
-            url=imdb['url'],
-            **locals()
-        )
-        temp.IMDB_CAP[message.from_user.id] = cap
-        if not settings.get('button'):
-            for file_num, file in enumerate(files, start=1):
-                cap += f"\n\n<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}</a></b>"
-    else:
-        if settings.get('button'):
-            cap =f"<b><blockquote>Hey!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"
-        else:
-            cap =f"<b><blockquote>✨ Hello!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"            
-            for file_num, file in enumerate(files, start=1):
-                cap += f"<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}\n\n</a></b>"                
-    if imdb and imdb.get('poster'):
-        try:
-            hehe = await m.edit_photo(photo=imdb.get('poster'), caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+            
+            # Auto-delete after 2 minutes
+            await asyncio.sleep(120)
+            await k.delete()
             try:
-                if settings['auto_delete']:
-                    await asyncio.sleep(DELETE_TIME)
-                    await hehe.delete()
-                    await message.delete()
-            except KeyError:
-                await save_group_settings(message.chat.id, 'auto_delete', True)
-                await asyncio.sleep(DELETE_TIME)
-                await hehe.delete()
                 await message.delete()
-        except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
-            pic = imdb.get('poster')
-            poster = pic.replace('.jpg', "._V1_UX360.jpg") 
-            hmm = await m.edit_photo(photo=poster, caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
-            try:
-               if settings['auto_delete']:
-                    await asyncio.sleep(DELETE_TIME)
-                    await hmm.delete()
-                    await message.delete()
-            except KeyError:
-                await save_group_settings(message.chat.id, 'auto_delete', True)
-                await asyncio.sleep(DELETE_TIME)
-                await hmm.delete()
-                await message.delete()
+            except:
+                pass
+                
         except Exception as e:
-            LOGGER.error(e)
-            fek = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+            LOGGER.error(f"Error showing suggestions: {e}")
+
+    async def get_trending_kdramas(self) -> List[Dict]:
+        """Get trending K-Dramas from external API"""
+        # Cache trending data for 1 hour
+        if hasattr(self, 'trending_cache') and self.trending_cache.get('expires', 0) > datetime.now().timestamp():
+            return self.trending_cache.get('data', [])
+            
+        try:
+            # This would integrate with TMDB or MyDramaList API
+            # For demo purposes, return mock data
+            trending = [
+                {"title": "Business Proposal", "year": "2022", "rating": "8.5"},
+                {"title": "Twenty Five Twenty One", "year": "2022", "rating": "8.7"},
+                {"title": "Hometown Cha-Cha-Cha", "year": "2021", "rating": "8.9"},
+                {"title": "Squid Game", "year": "2021", "rating": "8.0"},
+                {"title": "Vincenzo", "year": "2021", "rating": "8.8"},
+                {"title": "It's Okay to Not Be Okay", "year": "2020", "rating": "8.6"},
+                {"title": "Crash Landing on You", "year": "2019", "rating": "8.7"},
+                {"title": "Goblin", "year": "2016", "rating": "8.9"}
+            ]
+            
+            # Cache for 1 hour
+            self.trending_cache = {
+                'data': trending,
+                'expires': datetime.now().timestamp() + 3600
+            }
+            
+            return trending
+            
+        except Exception as e:
+            LOGGER.error(f"Error fetching trending K-Dramas: {e}")
+            return []
+
+    async def display_results(self, client, message, m, search: str, files: List[SearchResult], 
+                            offset: str, total_results: int, settings: dict):
+        """Enhanced result display with K-Drama specific formatting"""
+        
+        key = f"{message.chat.id}-{message.id}"
+        FRESH[key] = search
+        temp.GETALL[key] = files
+        temp.SHORT[message.from_user.id] = message.chat.id
+        
+        # Generate enhanced buttons
+        btn = await self.generate_enhanced_buttons(files, key, settings)
+        
+        # Pagination logic
+        if offset != "":
+            req = message.from_user.id if message.from_user else 0
             try:
-                if settings['auto_delete']:
-                    await asyncio.sleep(DELETE_TIME)
-                    await fek.delete()
+                max_btn = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
+                total_pages = math.ceil(int(total_results) / max_btn)
+                btn.append([
+                    InlineKeyboardButton("◀️ Page", callback_data="pages"),
+                    InlineKeyboardButton(f"1/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton("Next ▶️", callback_data=f"next_{req}_{key}_{offset}")
+                ])
+            except:
+                btn.append([
+                    InlineKeyboardButton("◀️ Page", callback_data="pages"),
+                    InlineKeyboardButton("1/1", callback_data="pages"),
+                    InlineKeyboardButton("Next ▶️", callback_data=f"next_{req}_{key}_{offset}")
+                ])
+        else:
+            btn.append([
+                InlineKeyboardButton("📄 No more pages available", callback_data="pages")
+            ])
+
+        # Get K-Drama info instead of just IMDB
+        kdrama_info = await self.get_kdrama_info(search, files[0].file_name if files else "") if settings.get("imdb", True) else None
+        
+        # Generate caption
+        cap = await self.generate_result_caption(message, search, files, kdrama_info, settings)
+        
+        # Send result
+        await self.send_result_message(m, cap, btn, kdrama_info, message, settings)
+
+    async def get_kdrama_info(self, search: str, filename: str) -> Optional[Dict]:
+        """Get K-Drama information from multiple sources"""
+        try:
+            # First try to get IMDB info
+            imdb_info = await get_poster(search, file=filename)
+            
+            if imdb_info:
+                # Enhance with K-Drama specific info
+                imdb_info['content_type'] = 'K-Drama'
+                
+                # Add K-Drama specific fields if available
+                if 'korean' in search.lower() or 'kdrama' in search.lower():
+                    imdb_info['korean_title'] = await self.get_korean_title(search)
+                    imdb_info['episodes'] = await self.get_episode_count(search)
+                    
+            return imdb_info
+            
+        except Exception as e:
+            LOGGER.error(f"Error fetching K-Drama info: {e}")
+            return None
+
+    async def get_korean_title(self, title: str) -> str:
+        """Get Korean title for K-Drama"""
+        # This would integrate with K-Drama APIs
+        # For now, return mock data
+        korean_titles = {
+            "squid game": "오징어 게임",
+            "crash landing on you": "사랑의 불시착",
+            "goblin": "도깨비",
+            "hotel del luna": "호텔 델루나"
+        }
+        return korean_titles.get(title.lower(), "")
+
+    async def get_episode_count(self, title: str) -> str:
+        """Get episode count for K-Drama"""
+        # This would integrate with K-Drama databases
+        return "16 episodes"  # Default
+
+    async def generate_result_caption(self, message, search: str, files: List[SearchResult], 
+                                    kdrama_info: Optional[Dict], settings: dict) -> str:
+        """Generate enhanced result caption"""
+        
+        if kdrama_info:
+            # Use K-Drama template
+            template = script.KDRAMA_TEMPLATE_TXT if hasattr(script, 'KDRAMA_TEMPLATE_TXT') else script.IMDB_TEMPLATE_TXT
+            
+            cap = template.format(
+                query=search,
+                mention=message.from_user.mention,
+                **kdrama_info,
+                **locals()
+            )
+            
+            temp.IMDB_CAP[message.from_user.id] = cap
+            
+            if not settings.get('button'):
+                # Add file list to caption
+                for file_num, file in enumerate(files, start=1):
+                    file_info = self.format_file_info(file)
+                    cap += f"\n\n<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{file_info}</a></b>"
+        else:
+            # Basic caption
+            content_stats = self.analyze_content_types(files)
+            stats_text = " | ".join([f"{count} {type.value.title()}s" for type, count in content_stats.items() if count > 0])
+            
+            if settings.get('button'):
+                cap = (f"<b>🎭 Hey {message.from_user.mention}!\n\n"
+                      f"📂 Found <code>{len(files)}</code> results for: <code>{search}</code>\n"
+                      f"📊 Content: {stats_text}\n\n"
+                      f"🎬 Click buttons below to filter or download!</b>")
+            else:
+                cap = (f"<b>🎭 Hey {message.from_user.mention}!\n\n"
+                      f"📂 Found <code>{len(files)}</code> results for: <code>{search}</code>\n"
+                      f"📊 Content: {stats_text}\n\n</b>")
+                      
+                for file_num, file in enumerate(files, start=1):
+                    file_info = self.format_file_info(file)
+                    cap += f"<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{file_info}</a></b>\n\n"
+                    
+        return cap
+
+    def analyze_content_types(self, files: List[SearchResult]) -> Dict[ContentType, int]:
+        """Analyze content types in search results"""
+        type_counts = {content_type: 0 for content_type in ContentType}
+        
+        for file in files:
+            type_counts[file.content_type] += 1
+            
+        return type_counts
+
+    async def send_result_message(self, m, cap: str, btn: List[List[InlineKeyboardButton]], 
+                                kdrama_info: Optional[Dict], message, settings: dict):
+        """Send the result message with appropriate media"""
+        
+        try:
+            if kdrama_info and kdrama_info.get('poster'):
+                try:
+                    # Try to send with poster
+                    result_msg = await m.edit_photo(
+                        photo=kdrama_info['poster'],
+                        caption=cap,
+                        reply_markup=InlineKeyboardMarkup(btn),
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
+                    # Try alternative poster URL
+                    poster_url = kdrama_info['poster'].replace('.jpg', "._V1_UX360.jpg")
+                    result_msg = await m.edit_photo(
+                        photo=poster_url,
+                        caption=cap,
+                        reply_markup=InlineKeyboardMarkup(btn),
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                except Exception as e:
+                    LOGGER.error(f"Error sending photo: {e}")
+                    # Fallback to text
+                    result_msg = await m.edit_text(
+                        text=cap,
+                        reply_markup=InlineKeyboardMarkup(btn),
+                        parse_mode=enums.ParseMode.HTML
+                    )
+            else:
+                # Send text message
+                result_msg = await m.edit_text(
+                    text=cap,
+                    reply_markup=InlineKeyboardMarkup(btn),
+                    disable_web_page_preview=True,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            
+            # Auto-delete if enabled
+            if settings.get('auto_delete', False):
+                await asyncio.sleep(DELETE_TIME)
+                await result_msg.delete()
+                try:
                     await message.delete()
-            except KeyError:
-                await save_group_settings(message.chat.id, 'auto_delete', True)
-                await asyncio.sleep(DELETE_TIME)
-                await fek.delete()
-                await message.delete()
-    else:
-        fuk = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
-        try:
-            if settings['auto_delete']:
-                await asyncio.sleep(DELETE_TIME)
-                await fuk.delete()
-                await message.delete()
-        except KeyError:
-            await save_group_settings(message.chat.id, 'auto_delete', True)
-            await asyncio.sleep(DELETE_TIME)
-            await fuk.delete()
-            await message.delete()
+                except:
+                    pass
+                    
+        except Exception as e:
+            LOGGER.error(f"Error sending result message: {e}")
 
-async def ai_spell_check(chat_id, wrong_name):
-    async def search_movie(wrong_name):
-        search_results = imdb.search_movie(wrong_name)
-        movie_list = [movie['title'] for movie in search_results]
-        return movie_list
-    movie_list = await search_movie(wrong_name)
-    if not movie_list:
-        return
-    for _ in range(5):
-        closest_match = process.extractOne(wrong_name, movie_list)
-        if not closest_match or closest_match[1] <= 80:
-            return 
-        movie = closest_match[0]
-        files, offset, total_results = await get_search_results(chat_id=chat_id, query=movie)
-        if files:
-            return movie
-        movie_list.remove(movie)
+# Initialize the enhanced bot
+kdrama_bot = KDramaBot()
 
+# Main function to replace the original
+async def auto_filter(client, msg, spoll=False):
+    """Main auto filter function - enhanced version"""
+    return await kdrama_bot.auto_filter(client, msg, spoll)
+
+# Enhanced spell check function
+async def ai_spell_check_kdrama(chat_id: int, wrong_name: str) -> Optional[str]:
+    """Enhanced AI spell check for K-Drama content"""
+    return await kdrama_bot.ai_spell_check_kdrama(chat_id, wrong_name)
+
+# Enhanced advantage spell check
 async def advantage_spell_chok(client, message):
-    mv_id = message.id
-    search = message.text
-    chat_id = message.chat.id
-    settings = await get_settings(chat_id)
-    query = re.sub(
-        r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
-        "", message.text, flags=re.IGNORECASE)
-    query = query.strip() + " movie"
-    try:
-        movies = await get_poster(search, bulk=True)
-    except:
-        k = await message.reply(script.I_CUDNT.format(message.from_user.mention))
-        await asyncio.sleep(60)
-        await k.delete()
-        try:
-            await message.delete()
-        except:
-            pass
-        return
-    if not movies:
-        google = search.replace(" ", "+")
-        button = [[
-            InlineKeyboardButton("💡 Spell Check? Google it! 🔎", url=f"https://www.google.com/search?q={google}")
-        ]]
-        k = await message.reply_text(text=script.I_CUDNT.format(search), reply_markup=InlineKeyboardMarkup(button))
-        await asyncio.sleep(60)
-        await k.delete()
-        try:
-            await message.delete()
-        except:
-            pass
-        return
-    user = message.from_user.id if message.from_user else 0
-    buttons = [[
-        InlineKeyboardButton(text=movie.get('title'), callback_data=f"spol#{movie.movieID}#{user}")
-    ]
-        for movie in movies
-    ]
-    buttons.append(
-        [InlineKeyboardButton(text="❌ Close", callback_data='close_data')]
-    )
-    d = await message.reply_text(text=script.CUDNT_FND.format(message.from_user.mention), reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=message.id)
-    await asyncio.sleep(60)
-    await d.delete()
-    try:
-        await message.delete()
-    except:
-        pass
+    """Enhanced spell check with K-Drama suggestions"""
+    return await kdrama_bot.show_kdrama_suggestions(client, message)

@@ -45,6 +45,10 @@ FEATURE_FLAGS = {
     "analytics": True
 }
 #
+user_sessions = defaultdict(dict)
+search_analytics = defaultdict(list)
+user_bookmarks = defaultdict(set)
+search_history = defaultdict(list)
 
 tracemalloc.start()
 

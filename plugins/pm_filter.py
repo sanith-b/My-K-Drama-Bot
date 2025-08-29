@@ -1,38 +1,58 @@
+# pm_filter.py - Cleaned imports
 import asyncio
 import re
 import ast
 import math
 import random
 import pytz
-from datetime import datetime, timedelta, date, time
-lock = asyncio.Lock()
-from database.users_chats_db import db
-from database.refer import referdb
-from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
-from Script import script
-import pyrogram
-from info import *
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, WebAppInfo
-from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid
-from utils import *
-from fuzzywuzzy import process
-from database.users_chats_db import db
-from database.ia_filterdb import Media, Media2, get_file_details, get_search_results, get_bad_files
-from logging_helper import LOGGER
-from urllib.parse import quote_plus
-from Lucia.util.file_properties import get_name, get_hash, get_media_file_size
-from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
-from .services.enhanced_filter import EnhancedAutoFilterService
-from .services.quality import QualityAnalyzer
-from .services.tmdb import AdvancedTMDBService
+from datetime import datetime, timedelta, date, time
+from urllib.parse import quote_plus
+from fuzzywuzzy import process
 
-# At the top of pm_filter.py
-from pyrogram.errors import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
-from pyrogram import enums
+# Pyrogram imports
+from pyrogram import Client, filters, enums
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, WebAppInfo
+from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
+
+# Local imports
+from Script import script
+from info import *
+from utils import *
+from logging_helper import LOGGER
+
+# Database imports
+from database.users_chats_db import db
+from database.refer import referdb
+from database.ia_filterdb import Media, Media2, get_file_details, get_search_results, get_bad_files
+from database.topdb import silentdb
+
+# File utilities
+from Lucia.util.file_properties import get_name, get_hash, get_media_file_size
+
+# Service imports - check if these files exist
+try:
+    from .services.enhanced_filter import EnhancedAutoFilterService
+except ImportError:
+    # Fallback if service doesn't exist
+    EnhancedAutoFilterService = None
+
+try:
+    from .services.quality import QualityAnalyzer
+except ImportError:
+    # Fallback if service doesn't exist
+    QualityAnalyzer = None
+
+try:
+    from .services.tmdb import AdvancedTMDBService
+except ImportError:
+    # Fallback if service doesn't exist
+    AdvancedTMDBService = None
+
+# Initialize lock
+lock = asyncio.Lock()
 
 # Your existing imports
 # Add any missing service imports based on your project structure# Add other missing imports

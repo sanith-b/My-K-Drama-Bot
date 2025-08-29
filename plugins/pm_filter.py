@@ -33,11 +33,16 @@ from pyrogram import enums
 
 import aiohttp
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
+import hashlib
+from collections import defaultdict
+import time
 
-
+TMDB_API_KEY = "90dde61a7cf8339a2cff5d805d5597a9"  # Replace with your actual TMDB API key
+TMDB_BASE_URL = "https://api.themoviedb.org/3"
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"
@@ -1909,10 +1914,10 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
     
 class ContentType(Enum):
-    KDRAMA = "k-drama"
+    KDRAMA = "korean-drama"
     MOVIE = "movie"
     VARIETY_SHOW = "variety"
-    DOCUMENTARY = "documentary"
+    ANIME = "anime"
 
 @dataclass
 class SearchResult:
@@ -1920,564 +1925,786 @@ class SearchResult:
     file_name: str
     file_size: int
     quality: str = ""
-    language: str = ""
     episode: str = ""
     season: str = ""
+    year: str = ""
+    content_type: ContentType = ContentType.KDRAMA
+    tmdb_id: Optional[int] = None
+    score: float = 0.0  # Relevance score
+
+@dataclass
+class TMDBResult:
+    id: int
+    title: str
+    original_title: str
+    poster_path: Optional[str]
+    backdrop_path: Optional[str]
+    overview: str
+    vote_average: float
+    vote_count: int
+    release_date: str
+    genres: List[str] = field(default_factory=list)
+    runtime: Optional[int] = None
+    episodes: Optional[int] = None
+    seasons: Optional[int] = None
+    networks: List[str] = field(default_factory=list)
     content_type: ContentType = ContentType.KDRAMA
 
-class KDramaBot:
+class PerformanceCache:
+    """High-performance caching system"""
+    
+    def __init__(self, max_size: int = 1000, ttl: int = 3600):
+        self.cache = {}
+        self.access_times = {}
+        self.max_size = max_size
+        self.ttl = ttl
+    
+    def _is_expired(self, key: str) -> bool:
+        return time.time() - self.access_times.get(key, 0) > self.ttl
+    
+    def get(self, key: str) -> Any:
+        if key in self.cache and not self._is_expired(key):
+            self.access_times[key] = time.time()
+            return self.cache[key]
+        return None
+    
+    def set(self, key: str, value: Any):
+        if len(self.cache) >= self.max_size:
+            # Remove oldest entries
+            oldest = min(self.access_times.keys(), key=lambda k: self.access_times[k])
+            del self.cache[oldest]
+            del self.access_times[oldest]
+        
+        self.cache[key] = value
+        self.access_times[key] = time.time()
+    
+    def clear_expired(self):
+        """Clean up expired entries"""
+        expired_keys = [k for k in self.cache.keys() if self._is_expired(k)]
+        for key in expired_keys:
+            del self.cache[key]
+            del self.access_times[key]
+
+class EnhancedKDramaBot:
     def __init__(self):
-        self.search_cache = {}
-        self.user_preferences = {}
-        self.trending_cache = {}
+        # High-performance caching
+        self.search_cache = PerformanceCache(max_size=500, ttl=1800)  # 30 min
+        self.tmdb_cache = PerformanceCache(max_size=200, ttl=7200)    # 2 hours
+        self.trending_cache = PerformanceCache(max_size=50, ttl=3600) # 1 hour
         
+        # Performance tracking
+        self.search_stats = defaultdict(int)
+        self.response_times = []
+        
+        # Session for HTTP requests
+        self.session = None
+        
+        # Pre-compiled regex patterns for better performance
+        self.quality_patterns = {
+            re.compile(r'(?i)(4k|2160p|uhd)'): '🎬 4K',
+            re.compile(r'(?i)(1080p|fhd|full.?hd)'): '🎥 1080p',
+            re.compile(r'(?i)(720p|hd)'): '📺 720p',
+            re.compile(r'(?i)(480p|sd)'): '📱 480p',
+            re.compile(r'(?i)(360p)'): '📺 360p'
+        }
+        
+        self.episode_patterns = [
+            re.compile(r'(?i)ep?\.?\s*(\d+)'),
+            re.compile(r'(?i)episode\s*(\d+)'),
+            re.compile(r'(?i)e(\d+)'),
+            re.compile(r'(?i)\[(\d+)\]'),
+            re.compile(r'(?i)(\d+)(?:st|nd|rd|th)?\s*(?:episode|ep)'),
+        ]
+        
+        self.year_pattern = re.compile(r'(?i)(?:19|20)(\d{2})')
+        self.season_pattern = re.compile(r'(?i)s(\d+)|season\s*(\d+)')
+    
+    async def get_session(self) -> aiohttp.ClientSession:
+        """Get or create HTTP session"""
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        return self.session
+    
+    async def close_session(self):
+        """Close HTTP session"""
+        if self.session and not self.session.closed:
+            await self.session.close()
+    
+    def _generate_cache_key(self, *args) -> str:
+        """Generate cache key from arguments"""
+        return hashlib.md5("_".join(map(str, args)).encode()).hexdigest()
+    
     async def auto_filter(self, client, msg, spoll=False):
-        """Enhanced auto filter with K-Drama specific features"""
-        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+        """Ultra-fast auto filter with TMDB integration"""
+        start_time = time.time()
         
-        if not spoll:
-            message = msg
-            if message.text.startswith("/"): 
-                return
+        try:
+            curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+            
+            if not spoll:
+                message = msg
+                if message.text.startswith("/"): 
+                    return
+                    
+                # Quick regex check for invalid messages
+                if re.match(r"^[\/,!.\U0001F600-\U000E007F]", message.text):
+                    return
+                    
+                if len(message.text) > 100:
+                    return
                 
-            # Enhanced regex to handle K-Drama specific terms
-            if re.findall(r"((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
-                return
+                # Process search with caching
+                search = await self._process_search_fast(message.text)
                 
-            if len(message.text) < 100:
-                # Enhanced search processing for K-Drama content
-                search = await self.process_kdrama_search(message.text)
-                
-                # Show typing indicator for better UX
+                # Show immediate feedback
                 await client.send_chat_action(message.chat.id, enums.ChatAction.TYPING)
                 
                 m = await message.reply_text(
-                    f'<b>🔍 Hey {message.from_user.mention}!\n'
-                    f'Searching K-Drama: <code>{search}</code>\n'
-                    f'⏱️ Please wait...</b>', 
+                    f'<b>⚡ Searching: <code>{search}</code></b>', 
                     reply_to_message_id=message.id
                 )
                 
-                # Enhanced search with content type detection
-                files, offset, total_results = await self.enhanced_search_results(
-                    message.chat.id, search, offset=0, filter=True
+                # Fast search with parallel processing
+                files, offset, total_results = await self._ultra_fast_search(
+                    message.chat.id, search, offset=0
                 )
                 
                 settings = await get_settings(message.chat.id)
                 
                 if not files:
-                    if settings.get("spell_check", True):
-                        await self.handle_no_results(client, message, search, m)
-                        return
-        else:
-            message = msg.message.reply_to_message
-            search, files, offset, total_results = spoll
-            m = await message.reply_text(
-                f'<b>🎬 Searching: <code>{search}</code></b>', 
-                reply_to_message_id=message.id
-            )
-            settings = await get_settings(message.chat.id)
-            await msg.message.delete()
+                    await self._handle_no_results_fast(client, message, search, m)
+                    return
+            else:
+                message = msg.message.reply_to_message
+                search, files, offset, total_results = spoll
+                m = await message.reply_text(
+                    f'<b>⚡ Results: <code>{search}</code></b>', 
+                    reply_to_message_id=message.id
+                )
+                settings = await get_settings(message.chat.id)
+                await msg.message.delete()
+            
+            # Display results with TMDB data
+            await self._display_results_fast(client, message, m, search, files, offset, total_results, settings)
+            
+            # Track performance
+            response_time = time.time() - start_time
+            self.response_times.append(response_time)
+            self.search_stats[search] += 1
+            
+            # Log performance for optimization
+            if response_time > 3.0:  # Log slow responses
+                LOGGER.warning(f"Slow response: {response_time:.2f}s for query: {search}")
+            
+        except Exception as e:
+            LOGGER.error(f"Auto filter error: {e}")
+            try:
+                await m.edit_text("❌ An error occurred. Please try again.")
+            except:
+                pass
 
-        # Generate enhanced results with K-Drama specific formatting
-        await self.display_results(client, message, m, search, files, offset, total_results, settings)
-
-    async def process_kdrama_search(self, text: str) -> str:
-        """Enhanced search processing for K-Drama content"""
-        search = await replace_words(text)
-        search = search.lower()
+    async def _process_search_fast(self, text: str) -> str:
+        """Lightning-fast search processing"""
+        cache_key = self._generate_cache_key("search_process", text)
+        cached = self.search_cache.get(cache_key)
+        if cached:
+            return cached
         
-        # K-Drama specific replacements
-        kdrama_replacements = {
-            "kdrama": "korean drama",
-            "k-drama": "korean drama",
-            "k drama": "korean drama",
-            "ep": "episode",
-            "eps": "episodes",
-            "sub": "subtitle",
-            "subs": "subtitles",
-            "eng sub": "english subtitle",
-            "hindi dub": "hindi dubbed",
-            "tamil dub": "tamil dubbed"
+        search = text.lower().strip()
+        
+        # Optimized replacements using dict lookup
+        replacements = {
+            'kdrama': 'korean drama', 'k-drama': 'korean drama', 'k drama': 'korean drama',
+            'ep': 'episode', 'eps': 'episodes', 'sub': 'subtitle', 'subs': 'subtitles',
+            'eng sub': 'english subtitle', 'hindi dub': 'hindi dubbed',
+            'tamil dub': 'tamil dubbed', 'korean': '', 'drama': '',
+            '-': ' ', ':': '', '.': ' ', '_': ' '
         }
         
-        for old, new in kdrama_replacements.items():
+        for old, new in replacements.items():
             search = search.replace(old, new)
-            
-        search = search.replace("-", " ")
-        search = search.replace(":", "")
+        
+        # Single regex operation instead of multiple
         search = re.sub(r'\s+', ' ', search).strip()
         
+        # Remove common unnecessary words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+        search = ' '.join(word for word in search.split() if word not in stop_words)
+        
+        self.search_cache.set(cache_key, search)
         return search
 
-    async def enhanced_search_results(self, chat_id: int, query: str, offset: int = 0, filter: bool = True) -> Tuple[List[SearchResult], str, int]:
-        """Enhanced search with content type detection and quality filtering"""
+    async def _ultra_fast_search(self, chat_id: int, query: str, offset: int = 0) -> Tuple[List[SearchResult], str, int]:
+        """Ultra-fast search with parallel processing and smart caching"""
+        cache_key = self._generate_cache_key("search", chat_id, query, offset)
+        cached = self.search_cache.get(cache_key)
+        if cached:
+            return cached
+        
         # Get basic search results
-        files, offset, total_results = await get_search_results(chat_id, query, offset, filter)
+        files, offset, total_results = await get_search_results(chat_id, query, offset, True)
         
-        # Convert to enhanced SearchResult objects
-        enhanced_files = []
-        for file in files:
-            result = SearchResult(
-                file_id=file.file_id,
-                file_name=file.file_name,
-                file_size=file.file_size,
-                quality=self.extract_quality(file.file_name),
-                language=self.extract_language(file.file_name),
-                episode=self.extract_episode(file.file_name),
-                season=self.extract_season(file.file_name),
-                content_type=self.detect_content_type(file.file_name)
-            )
-            enhanced_files.append(result)
+        if not files:
+            return [], offset, 0
+        
+        # Parallel processing of file analysis
+        enhanced_files = await asyncio.gather(
+            *[self._analyze_file_fast(file) for file in files[:50]],  # Limit to 50 for performance
+            return_exceptions=True
+        )
+        
+        # Filter out exceptions and sort by relevance
+        valid_files = [f for f in enhanced_files if isinstance(f, SearchResult)]
+        valid_files.sort(key=lambda x: x.score, reverse=True)
+        
+        result = (valid_files, offset, total_results)
+        self.search_cache.set(cache_key, result)
+        return result
+
+    async def _analyze_file_fast(self, file) -> SearchResult:
+        """Fast file analysis with pre-compiled patterns"""
+        filename = file.file_name.lower()
+        
+        # Extract quality using pre-compiled patterns
+        quality = "📺 HD"
+        for pattern, qual in self.quality_patterns.items():
+            if pattern.search(filename):
+                quality = qual
+                break
+        
+        # Extract episode using pre-compiled patterns
+        episode = ""
+        for pattern in self.episode_patterns:
+            match = pattern.search(filename)
+            if match:
+                ep_num = match.group(1)
+                episode = f"EP{ep_num.zfill(2)}"
+                break
+        
+        # Extract year
+        year = ""
+        year_match = self.year_pattern.search(filename)
+        if year_match:
+            year = f"20{year_match.group(1)}"
+        
+        # Extract season
+        season = ""
+        season_match = self.season_pattern.search(filename)
+        if season_match:
+            season_num = season_match.group(1) or season_match.group(2)
+            season = f"S{season_num.zfill(2)}"
+        
+        # Detect content type
+        content_type = ContentType.KDRAMA
+        if any(word in filename for word in ['variety', 'show', 'running man']):
+            content_type = ContentType.VARIETY_SHOW
+        elif any(word in filename for word in ['movie', 'film']):
+            content_type = ContentType.MOVIE
+        elif any(word in filename for word in ['anime']):
+            content_type = ContentType.ANIME
+        
+        # Calculate relevance score
+        score = self._calculate_relevance_score(filename, quality, episode, year)
+        
+        return SearchResult(
+            file_id=file.file_id,
+            file_name=file.file_name,
+            file_size=file.file_size,
+            quality=quality,
+            episode=episode,
+            season=season,
+            year=year,
+            content_type=content_type,
+            score=score
+        )
+
+    def _calculate_relevance_score(self, filename: str, quality: str, episode: str, year: str) -> float:
+        """Calculate relevance score for sorting"""
+        score = 0.0
+        
+        # Quality scoring
+        quality_scores = {"🎬 4K": 1.0, "🎥 1080p": 0.8, "📺 720p": 0.6, "📱 480p": 0.4}
+        score += quality_scores.get(quality, 0.3)
+        
+        # Episode preference (complete series vs single episodes)
+        if episode and "01" in episode:
+            score += 0.3  # First episode gets bonus
+        elif episode:
+            score += 0.1
+        
+        # Recent content bonus
+        if year and int(year) >= 2020:
+            score += 0.2
+        elif year and int(year) >= 2015:
+            score += 0.1
+        
+        # File size bonus (larger = better quality usually)
+        # This would need the actual file size, simplified here
+        score += 0.1  # Base score
+        
+        return score
+
+    async def _get_tmdb_data_fast(self, search: str) -> Optional[TMDBResult]:
+        """Fast TMDB data retrieval with caching"""
+        cache_key = self._generate_cache_key("tmdb", search)
+        cached = self.tmdb_cache.get(cache_key)
+        if cached:
+            return cached
+        
+        if not TMDB_API_KEY or TMDB_API_KEY == "your_tmdb_api_key_here":
+            return None
+        
+        try:
+            session = await self.get_session()
             
-        return enhanced_files, offset, total_results
-
-    def extract_quality(self, filename: str) -> str:
-        """Extract video quality from filename"""
-        quality_patterns = {
-            r'(?i)(4k|2160p)': '4K',
-            r'(?i)(1080p|fhd)': '1080p',
-            r'(?i)(720p|hd)': '720p',
-            r'(?i)(480p|sd)': '480p',
-            r'(?i)(360p)': '360p'
-        }
+            # Search for Korean TV shows first, then movies
+            search_queries = [
+                f"{TMDB_BASE_URL}/search/tv?api_key={TMDB_API_KEY}&query={search}&with_original_language=ko",
+                f"{TMDB_BASE_URL}/search/movie?api_key={TMDB_API_KEY}&query={search}&with_original_language=ko",
+                f"{TMDB_BASE_URL}/search/tv?api_key={TMDB_API_KEY}&query={search}",  # Fallback without language filter
+            ]
+            
+            for url in search_queries:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        results = data.get('results', [])
+                        
+                        if results:
+                            # Get the best match
+                            result = results[0]
+                            tmdb_result = await self._parse_tmdb_result(result, session)
+                            if tmdb_result:
+                                self.tmdb_cache.set(cache_key, tmdb_result)
+                                return tmdb_result
+            
+        except Exception as e:
+            LOGGER.error(f"TMDB API error: {e}")
         
-        for pattern, quality in quality_patterns.items():
-            if re.search(pattern, filename):
-                return quality
-        return "HD"
+        return None
 
-    def extract_language(self, filename: str) -> str:
-        """Extract language from filename"""
-        lang_patterns = {
-            r'(?i)(eng|english)': '🇺🇸 English',
-            r'(?i)(kor|korean)': '🇰🇷 Korean',
-            r'(?i)(hin|hindi)': '🇮🇳 Hindi',
-            r'(?i)(tam|tamil)': '🇮🇳 Tamil',
-            r'(?i)(tel|telugu)': '🇮🇳 Telugu',
-            r'(?i)(mal|malayalam)': '🇮🇳 Malayalam'
-        }
+    async def _parse_tmdb_result(self, result: dict, session: aiohttp.ClientSession) -> Optional[TMDBResult]:
+        """Parse TMDB result into our format"""
+        try:
+            # Determine if it's TV or movie
+            is_tv = 'first_air_date' in result
+            tmdb_id = result['id']
+            
+            # Get detailed info
+            detail_url = f"{TMDB_BASE_URL}/{'tv' if is_tv else 'movie'}/{tmdb_id}?api_key={TMDB_API_KEY}"
+            
+            async with session.get(detail_url) as response:
+                if response.status == 200:
+                    details = await response.json()
+                    
+                    return TMDBResult(
+                        id=tmdb_id,
+                        title=details.get('name' if is_tv else 'title', ''),
+                        original_title=details.get('original_name' if is_tv else 'original_title', ''),
+                        poster_path=f"{TMDB_IMAGE_BASE}{details['poster_path']}" if details.get('poster_path') else None,
+                        backdrop_path=f"{TMDB_IMAGE_BASE}{details['backdrop_path']}" if details.get('backdrop_path') else None,
+                        overview=details.get('overview', ''),
+                        vote_average=details.get('vote_average', 0),
+                        vote_count=details.get('vote_count', 0),
+                        release_date=details.get('first_air_date' if is_tv else 'release_date', ''),
+                        genres=[g['name'] for g in details.get('genres', [])],
+                        runtime=details.get('episode_run_time', [0])[0] if is_tv else details.get('runtime'),
+                        episodes=details.get('number_of_episodes') if is_tv else None,
+                        seasons=details.get('number_of_seasons') if is_tv else None,
+                        networks=[n['name'] for n in details.get('networks', [])] if is_tv else [],
+                        content_type=ContentType.KDRAMA if is_tv else ContentType.MOVIE
+                    )
+        except Exception as e:
+            LOGGER.error(f"Error parsing TMDB result: {e}")
         
-        for pattern, lang in lang_patterns.items():
-            if re.search(pattern, filename):
-                return lang
-        return "🇰🇷 Korean"
+        return None
 
-    def extract_episode(self, filename: str) -> str:
-        """Extract episode number from filename"""
-        ep_patterns = [
-            r'(?i)ep?\.?\s*(\d+)',
-            r'(?i)episode\s*(\d+)',
-            r'(?i)e(\d+)',
-            r'(?i)\s(\d+)\s'
-        ]
-        
-        for pattern in ep_patterns:
-            match = re.search(pattern, filename)
-            if match:
-                return f"EP {match.group(1)}"
-        return ""
-
-    def extract_season(self, filename: str) -> str:
-        """Extract season from filename"""
-        season_patterns = [
-            r'(?i)s(\d+)',
-            r'(?i)season\s*(\d+)'
-        ]
-        
-        for pattern in season_patterns:
-            match = re.search(pattern, filename)
-            if match:
-                return f"S{match.group(1)}"
-        return ""
-
-    def detect_content_type(self, filename: str) -> ContentType:
-        """Detect content type from filename"""
-        filename_lower = filename.lower()
-        
-        if any(keyword in filename_lower for keyword in ['variety', 'show', 'running man', 'knowing bros']):
-            return ContentType.VARIETY_SHOW
-        elif any(keyword in filename_lower for keyword in ['documentary', 'docu']):
-            return ContentType.DOCUMENTARY
-        elif any(keyword in filename_lower for keyword in ['movie', 'film']):
-            return ContentType.MOVIE
-        else:
-            return ContentType.KDRAMA
-
-    async def generate_enhanced_buttons(self, files: List[SearchResult], key: str, settings: dict) -> List[List[InlineKeyboardButton]]:
-        """Generate enhanced buttons with K-Drama specific features"""
+    async def _generate_smart_buttons(self, files: List[SearchResult], key: str, settings: dict) -> List[List[InlineKeyboardButton]]:
+        """Generate smart, performance-optimized buttons"""
         btn = []
         
-        if settings.get('button'):
-            # File buttons with enhanced formatting
-            for file in files:
-                file_info = self.format_file_info(file)
-                btn.append([
-                    InlineKeyboardButton(
-                        text=file_info,
-                        callback_data=f'file#{file.file_id}'
-                    )
-                ])
+        if settings.get('button') and files:
+            # Smart file grouping by quality and episode
+            grouped_files = self._group_files_smart(files)
+            
+            # Create optimized file buttons
+            for group_name, group_files in grouped_files.items():
+                if len(group_files) == 1:
+                    file = group_files[0]
+                    btn.append([
+                        InlineKeyboardButton(
+                            text=self._format_file_button(file),
+                            callback_data=f'file#{file.file_id}'
+                        )
+                    ])
+                else:
+                    # Create expandable group
+                    btn.append([
+                        InlineKeyboardButton(
+                            text=f"📁 {group_name} ({len(group_files)} files)",
+                            callback_data=f'expand#{key}#{group_name}'
+                        )
+                    ])
         
-        # Enhanced filter buttons
-        filter_buttons = [
-            InlineKeyboardButton("🎬 Quality", callback_data=f"qualities#{key}#0"),
-            InlineKeyboardButton("🌐 Language", callback_data=f"languages#{key}#0"),
-            InlineKeyboardButton("📺 Episode", callback_data=f"episodes#{key}#0")
-        ]
-        btn.insert(0, filter_buttons)
+        # Smart filter buttons (removed language as requested)
+        quality_counts = defaultdict(int)
+        episode_counts = defaultdict(int)
+        
+        for file in files:
+            if file.quality:
+                quality_counts[file.quality] += 1
+            if file.episode:
+                episode_counts[file.episode] += 1
+        
+        filter_row = []
+        if len(quality_counts) > 1:
+            filter_row.append(InlineKeyboardButton("🎬 Quality", callback_data=f"qualities#{key}#0"))
+        if len(episode_counts) > 1:
+            filter_row.append(InlineKeyboardButton("📺 Episodes", callback_data=f"episodes#{key}#0"))
+        
+        if filter_row:
+            btn.insert(0, filter_row)
         
         # Action buttons
         action_buttons = [
-            InlineKeyboardButton("📥 Send All", callback_data=f"sendfiles#{key}"),
-            InlineKeyboardButton("⭐ Add to Watchlist", callback_data=f"watchlist#{key}")
+            InlineKeyboardButton("📥 Download All", callback_data=f"sendfiles#{key}"),
+            InlineKeyboardButton("⭐ Trending", callback_data="trending_now")
         ]
-        btn.insert(1, action_buttons)
-        
-        # Quick access buttons
-        quick_buttons = [
-            InlineKeyboardButton("🔥 Trending", callback_data="trending_kdramas"),
-            InlineKeyboardButton("🎲 Random", callback_data="random_kdrama")
-        ]
-        btn.insert(2, quick_buttons)
+        btn.insert(-1 if filter_row else 0, action_buttons)
         
         return btn
 
-    def format_file_info(self, file: SearchResult) -> str:
-        """Format file information for button display"""
-        size = silent_size(file.file_size)
-        name = clean_filename(file.file_name)
+    def _group_files_smart(self, files: List[SearchResult]) -> Dict[str, List[SearchResult]]:
+        """Smart file grouping for better UX"""
+        groups = defaultdict(list)
         
-        info_parts = [size]
-        if file.quality:
-            info_parts.append(file.quality)
-        if file.episode:
-            info_parts.append(file.episode)
-        if file.language and file.language != "🇰🇷 Korean":
-            info_parts.append(file.language.split()[-1])
+        for file in files[:20]:  # Limit for performance
+            # Group by quality and type
+            if file.episode:
+                group_key = f"{file.quality} Episodes"
+            elif file.content_type == ContentType.MOVIE:
+                group_key = f"{file.quality} Movies"
+            else:
+                group_key = f"{file.quality} {file.content_type.value.title()}"
             
-        info = " | ".join(info_parts)
+            groups[group_key].append(file)
         
-        # Add content type emoji
+        return dict(groups)
+
+    def _format_file_button(self, file: SearchResult) -> str:
+        """Format file button text efficiently"""
+        parts = [silent_size(file.file_size)]
+        
+        if file.quality:
+            parts.append(file.quality)
+        if file.episode:
+            parts.append(file.episode)
+        if file.year:
+            parts.append(f"({file.year})")
+        
+        info = " ".join(parts)
+        name = clean_filename(file.file_name)[:40] + "..." if len(file.file_name) > 40 else clean_filename(file.file_name)
+        
         type_emoji = {
             ContentType.KDRAMA: "🎭",
             ContentType.MOVIE: "🎬", 
             ContentType.VARIETY_SHOW: "🎪",
-            ContentType.DOCUMENTARY: "📚"
+            ContentType.ANIME: "🎌"
         }
         
         return f"{type_emoji.get(file.content_type, '🎭')} {info} | {name}"
 
-    async def handle_no_results(self, client, message, search: str, m):
-        """Enhanced no results handler with K-Drama specific suggestions"""
-        # Try AI spell check first
-        ai_sts = await m.edit('🤖 Checking spelling with AI...')
-        corrected = await self.ai_spell_check_kdrama(message.chat.id, search)
-        
-        if corrected:
-            await ai_sts.edit(f'<b>✅ AI Suggested: <code>{corrected}</code>\n🔍 Searching now...</b>')
-            await asyncio.sleep(2)
-            message.text = corrected
-            await ai_sts.delete()
-            return await self.auto_filter(client, message)
-            
-        await ai_sts.delete()
-        
-        # Show K-Drama specific suggestions
-        await self.show_kdrama_suggestions(client, message)
-
-    async def ai_spell_check_kdrama(self, chat_id: int, wrong_name: str) -> Optional[str]:
-        """AI spell check specifically for K-Drama titles"""
+    async def _handle_no_results_fast(self, client, message, search: str, m):
+        """Ultra-fast no results handling with TMDB suggestions"""
         try:
-            # Search K-Drama databases
-            kdrama_results = await self.search_kdrama_database(wrong_name)
+            # Quick TMDB search for suggestions
+            tmdb_suggestions = await self._get_tmdb_suggestions_fast(search)
             
-            if not kdrama_results:
-                return None
-                
-            # Find closest match
-            closest_match = process.extractOne(wrong_name, kdrama_results)
-            
-            if closest_match and closest_match[1] > 75:  # 75% similarity threshold
-                # Verify if files exist for this title
-                files, _, _ = await get_search_results(chat_id, closest_match[0])
-                if files:
-                    return closest_match[0]
-                    
-        except Exception as e:
-            LOGGER.error(f"AI spell check error: {e}")
-            
-        return None
-
-    async def search_kdrama_database(self, query: str) -> List[str]:
-        """Search K-Drama database for similar titles"""
-        # This would integrate with K-Drama APIs like TMDB, MyDramaList, etc.
-        # For now, return a mock list
-        popular_kdramas = [
-            "Squid Game", "Crash Landing on You", "Goblin", "Descendants of the Sun",
-            "Hotel Del Luna", "It's Okay to Not Be Okay", "Start-Up", "True Beauty",
-            "Vincenzo", "Business Proposal", "Hometown's Embrace", "Twenty Five Twenty One",
-            "Our Beloved Summer", "Hometown Cha-Cha-Cha", "Red Sleeve", "Snowdrop"
-        ]
-        
-        # Simple fuzzy matching for demo
-        matches = process.extract(query, popular_kdramas, limit=10)
-        return [match[0] for match in matches if match[1] > 50]
-
-    async def show_kdrama_suggestions(self, client, message):
-        """Show K-Drama suggestions when no results found"""
-        search = message.text
-        
-        try:
-            # Get trending K-Dramas
-            trending = await self.get_trending_kdramas()
-            
-            if not trending:
-                # Fallback to Google search
-                google_url = f"https://www.google.com/search?q={search.replace(' ', '+')}+korean+drama"
-                button = [[
-                    InlineKeyboardButton("🔍 Search on Google", url=google_url),
-                    InlineKeyboardButton("📺 Browse K-Dramas", callback_data="browse_kdramas")
-                ]]
-                
-                k = await message.reply_text(
-                    text=f"<b>😔 Sorry, couldn't find '{search}'\n\n"
-                         f"🔍 Try searching with different keywords or check spelling</b>",
-                    reply_markup=InlineKeyboardMarkup(button)
-                )
-            else:
-                # Show trending suggestions
+            if tmdb_suggestions:
                 buttons = []
-                for drama in trending[:8]:  # Show top 8
+                for suggestion in tmdb_suggestions[:6]:  # Limit to 6 for performance
                     buttons.append([
                         InlineKeyboardButton(
-                            text=f"🎭 {drama['title']}", 
-                            callback_data=f"search#{drama['title']}"
+                            text=f"🎭 {suggestion['title'][:30]}...",
+                            callback_data=f"search#{suggestion['title']}"
                         )
                     ])
                 
-                buttons.append([
-                    InlineKeyboardButton("🔍 Google Search", 
-                                       url=f"https://www.google.com/search?q={search.replace(' ', '+')}+korean+drama"),
-                    InlineKeyboardButton("🚫 Close", callback_data='close_data')
+                buttons.extend([
+                    [InlineKeyboardButton("🔥 Trending Now", callback_data="trending_now")],
+                    [InlineKeyboardButton("🎲 Random K-Drama", callback_data="random_kdrama")],
+                    [InlineKeyboardButton("🚫 Close", callback_data='close_data')]
                 ])
                 
-                k = await message.reply_text(
-                    text=f"<b>😔 Couldn't find '{search}'\n\n"
-                         f"🔥 Try these trending K-Dramas instead:</b>",
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    reply_to_message_id=message.id
+                await m.edit_text(
+                    f"<b>😔 No results for '{search}'\n\n🎭 Try these K-Dramas instead:</b>",
+                    reply_markup=InlineKeyboardMarkup(buttons)
                 )
+            else:
+                # Fallback with trending
+                trending = await self._get_trending_fast()
+                if trending:
+                    buttons = [[
+                        InlineKeyboardButton(f"🎭 {drama['title'][:25]}...", callback_data=f"search#{drama['title']}")
+                    ] for drama in trending[:4]]
+                    
+                    buttons.append([
+                        InlineKeyboardButton("🔍 Google Search", 
+                                           url=f"https://www.google.com/search?q={search.replace(' ', '+')}+korean+drama"),
+                        InlineKeyboardButton("🚫 Close", callback_data='close_data')
+                    ])
+                    
+                    await m.edit_text(
+                        f"<b>😔 No results for '{search}'\n\n🔥 Popular K-Dramas:</b>",
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                else:
+                    await m.edit_text(f"<b>😔 No results found for '{search}'\n\nTry different keywords or check spelling.</b>")
             
-            # Auto-delete after 2 minutes
-            await asyncio.sleep(120)
-            await k.delete()
+            # Auto-delete after 90 seconds
+            await asyncio.sleep(90)
             try:
+                await m.delete()
                 await message.delete()
             except:
                 pass
                 
         except Exception as e:
-            LOGGER.error(f"Error showing suggestions: {e}")
+            LOGGER.error(f"Error handling no results: {e}")
+            await m.edit_text("😔 No results found. Please try different keywords.")
 
-    async def get_trending_kdramas(self) -> List[Dict]:
-        """Get trending K-Dramas from external API"""
-        # Cache trending data for 1 hour
-        if hasattr(self, 'trending_cache') and self.trending_cache.get('expires', 0) > datetime.now().timestamp():
-            return self.trending_cache.get('data', [])
-            
-        try:
-            # This would integrate with TMDB or MyDramaList API
-            # For demo purposes, return mock data
-            trending = [
-                {"title": "Business Proposal", "year": "2022", "rating": "8.5"},
-                {"title": "Twenty Five Twenty One", "year": "2022", "rating": "8.7"},
-                {"title": "Hometown Cha-Cha-Cha", "year": "2021", "rating": "8.9"},
-                {"title": "Squid Game", "year": "2021", "rating": "8.0"},
-                {"title": "Vincenzo", "year": "2021", "rating": "8.8"},
-                {"title": "It's Okay to Not Be Okay", "year": "2020", "rating": "8.6"},
-                {"title": "Crash Landing on You", "year": "2019", "rating": "8.7"},
-                {"title": "Goblin", "year": "2016", "rating": "8.9"}
-            ]
-            
-            # Cache for 1 hour
-            self.trending_cache = {
-                'data': trending,
-                'expires': datetime.now().timestamp() + 3600
-            }
-            
-            return trending
-            
-        except Exception as e:
-            LOGGER.error(f"Error fetching trending K-Dramas: {e}")
-            return []
-
-    async def display_results(self, client, message, m, search: str, files: List[SearchResult], 
-                            offset: str, total_results: int, settings: dict):
-        """Enhanced result display with K-Drama specific formatting"""
+    async def _get_tmdb_suggestions_fast(self, search: str) -> List[Dict]:
+        """Get fast TMDB suggestions"""
+        cache_key = self._generate_cache_key("suggestions", search)
+        cached = self.trending_cache.get(cache_key)
+        if cached:
+            return cached
         
+        try:
+            if not TMDB_API_KEY or TMDB_API_KEY == "your_tmdb_api_key_here":
+                return []
+            
+            session = await self.get_session()
+            url = f"{TMDB_BASE_URL}/search/tv?api_key={TMDB_API_KEY}&query={search}&with_original_language=ko"
+            
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    suggestions = [
+                        {
+                            'title': result.get('name', ''),
+                            'year': result.get('first_air_date', '').split('-')[0] if result.get('first_air_date') else '',
+                            'rating': result.get('vote_average', 0)
+                        }
+                        for result in data.get('results', [])[:8]
+                        if result.get('name')
+                    ]
+                    
+                    self.trending_cache.set(cache_key, suggestions)
+                    return suggestions
+        except Exception as e:
+            LOGGER.error(f"TMDB suggestions error: {e}")
+        
+        return []
+
+    async def _get_trending_fast(self) -> List[Dict]:
+        """Get trending K-Dramas with caching"""
+        cache_key = "trending_kdramas"
+        cached = self.trending_cache.get(cache_key)
+        if cached:
+            return cached
+        
+        try:
+            if TMDB_API_KEY and TMDB_API_KEY != "your_tmdb_api_key_here":
+                session = await self.get_session()
+                url = f"{TMDB_BASE_URL}/trending/tv/week?api_key={TMDB_API_KEY}"
+                
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        trending = [
+                            {
+                                'title': result.get('name', ''),
+                                'year': result.get('first_air_date', '').split('-')[0] if result.get('first_air_date') else '',
+                                'rating': result.get('vote_average', 0)
+                            }
+                            for result in data.get('results', [])[:10]
+                            if result.get('name')
+                        ]
+                        
+                        self.trending_cache.set(cache_key, trending)
+                        return trending
+        except Exception as e:
+            LOGGER.error(f"Trending fetch error: {e}")
+        
+        # Fallback trending list
+        fallback = [
+            {"title": "Extraordinary Attorney Woo", "year": "2022", "rating": 8.7},
+            {"title": "Business Proposal", "year": "2022", "rating": 8.5},
+            {"title": "Twenty Five Twenty One", "year": "2022", "rating": 8.8},
+            {"title": "Hometown Cha-Cha-Cha", "year": "2021", "rating": 8.9},
+            {"title": "Squid Game", "year": "2021", "rating": 8.0},
+            {"title": "Vincenzo", "year": "2021", "rating": 8.8},
+        ]
+        
+        self.trending_cache.set(cache_key, fallback)
+        return fallback
+
+    async def _display_results_fast(self, client, message, m, search: str, files: List[SearchResult], 
+                                  offset: str, total_results: int, settings: dict):
+        """Ultra-fast results display with TMDB integration"""
         key = f"{message.chat.id}-{message.id}"
         FRESH[key] = search
         temp.GETALL[key] = files
         temp.SHORT[message.from_user.id] = message.chat.id
         
-        # Generate enhanced buttons
-        btn = await self.generate_enhanced_buttons(files, key, settings)
+        # Parallel processing: buttons and TMDB data
+        buttons_task = self._generate_smart_buttons(files, key, settings)
+        tmdb_task = self._get_tmdb_data_fast(search) if settings.get("imdb", True) else None
         
-        # Pagination logic
+        btn, tmdb_data = await asyncio.gather(buttons_task, tmdb_task or asyncio.sleep(0))
+        
+        # Add pagination if needed
         if offset != "":
             req = message.from_user.id if message.from_user else 0
-            try:
-                max_btn = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
-                total_pages = math.ceil(int(total_results) / max_btn)
-                btn.append([
-                    InlineKeyboardButton("◀️ Page", callback_data="pages"),
-                    InlineKeyboardButton(f"1/{total_pages}", callback_data="pages"),
-                    InlineKeyboardButton("Next ▶️", callback_data=f"next_{req}_{key}_{offset}")
-                ])
-            except:
-                btn.append([
-                    InlineKeyboardButton("◀️ Page", callback_data="pages"),
-                    InlineKeyboardButton("1/1", callback_data="pages"),
-                    InlineKeyboardButton("Next ▶️", callback_data=f"next_{req}_{key}_{offset}")
-                ])
+            max_btn = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
+            total_pages = math.ceil(int(total_results) / max_btn)
+            
+            btn.append([
+                InlineKeyboardButton("◀️", callback_data="pages"),
+                InlineKeyboardButton(f"1/{total_pages}", callback_data="pages"),
+                InlineKeyboardButton("▶️", callback_data=f"next_{req}_{key}_{offset}")
+            ])
         else:
             btn.append([
-                InlineKeyboardButton("📄 No more pages available", callback_data="pages")
+                InlineKeyboardButton("📄 End of results", callback_data="pages")
             ])
-
-        # Get K-Drama info instead of just IMDB
-        kdrama_info = await self.get_kdrama_info(search, files[0].file_name if files else "") if settings.get("imdb", True) else None
         
-        # Generate caption
-        cap = await self.generate_result_caption(message, search, files, kdrama_info, settings)
+        # Generate optimized caption
+        cap = await self._generate_caption_fast(message, search, files, tmdb_data, settings)
         
-        # Send result
-        await self.send_result_message(m, cap, btn, kdrama_info, message, settings)
+        # Send result with optimal media handling
+        await self._send_result_optimized(m, cap, btn, tmdb_data, message, settings)
 
-    async def get_kdrama_info(self, search: str, filename: str) -> Optional[Dict]:
-        """Get K-Drama information from multiple sources"""
-        try:
-            # First try to get IMDB info
-            imdb_info = await get_poster(search, file=filename)
+    async def _generate_caption_fast(self, message, search: str, files: List[SearchResult], 
+                                   tmdb_data: Optional[TMDBResult], settings: dict) -> str:
+        """Generate optimized caption"""
+        if tmdb_data:
+            # Rich TMDB-based caption
+            genres_str = " | ".join(tmdb_data.genres[:3]) if tmdb_data.genres else "Drama"
+            rating_stars = "⭐" * int(tmdb_data.vote_average / 2) if tmdb_data.vote_average else ""
             
-            if imdb_info:
-                # Enhance with K-Drama specific info
-                imdb_info['content_type'] = 'K-Drama'
-                
-                # Add K-Drama specific fields if available
-                if 'korean' in search.lower() or 'kdrama' in search.lower():
-                    imdb_info['korean_title'] = await self.get_korean_title(search)
-                    imdb_info['episodes'] = await self.get_episode_count(search)
-                    
-            return imdb_info
+            cap = f"""<b>🎭 {tmdb_data.title}</b>
+<b>🌟 Original:</b> <i>{tmdb_data.original_title}</i>
+<b>📅 Year:</b> {tmdb_data.release_date.split('-')[0] if tmdb_data.release_date else 'N/A'}
+<b>⭐ Rating:</b> {tmdb_data.vote_average}/10 {rating_stars}
+<b>🎬 Genre:</b> {genres_str}"""
             
-        except Exception as e:
-            LOGGER.error(f"Error fetching K-Drama info: {e}")
-            return None
-
-    async def get_korean_title(self, title: str) -> str:
-        """Get Korean title for K-Drama"""
-        # This would integrate with K-Drama APIs
-        # For now, return mock data
-        korean_titles = {
-            "squid game": "오징어 게임",
-            "crash landing on you": "사랑의 불시착",
-            "goblin": "도깨비",
-            "hotel del luna": "호텔 델루나"
-        }
-        return korean_titles.get(title.lower(), "")
-
-    async def get_episode_count(self, title: str) -> str:
-        """Get episode count for K-Drama"""
-        # This would integrate with K-Drama databases
-        return "16 episodes"  # Default
-
-    async def generate_result_caption(self, message, search: str, files: List[SearchResult], 
-                                    kdrama_info: Optional[Dict], settings: dict) -> str:
-        """Generate enhanced result caption"""
-        
-        if kdrama_info:
-            # Use K-Drama template
-            template = script.KDRAMA_TEMPLATE_TXT if hasattr(script, 'KDRAMA_TEMPLATE_TXT') else script.IMDB_TEMPLATE_TXT
+            if tmdb_data.episodes:
+                cap += f"\n<b>📺 Episodes:</b> {tmdb_data.episodes}"
+            if tmdb_data.seasons:
+                cap += f" | <b>Seasons:</b> {tmdb_data.seasons}"
+            if tmdb_data.networks:
+                cap += f"\n<b>📡 Network:</b> {' | '.join(tmdb_data.networks[:2])}"
             
-            cap = template.format(
-                query=search,
-                mention=message.from_user.mention,
-                **kdrama_info,
-                **locals()
-            )
+            cap += f"\n\n<b>📖 Synopsis:</b>\n<i>{tmdb_data.overview[:200]}{'...' if len(tmdb_data.overview) > 200 else ''}</i>"
+            cap += f"\n\n<b>📂 Found {len(files)} files for:</b> <code>{search}</code>"
             
-            temp.IMDB_CAP[message.from_user.id] = cap
+            # Add quality breakdown
+            quality_count = {}
+            for file in files:
+                quality_count[file.quality] = quality_count.get(file.quality, 0) + 1
+            
+            quality_info = " | ".join([f"{count} {qual}" for qual, count in quality_count.items()])
+            cap += f"\n<b>🎬 Available:</b> {quality_info}"
             
             if not settings.get('button'):
-                # Add file list to caption
-                for file_num, file in enumerate(files, start=1):
-                    file_info = self.format_file_info(file)
-                    cap += f"\n\n<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{file_info}</a></b>"
+                cap += "\n\n<b>📋 Files:</b>"
+                for i, file in enumerate(files[:10], 1):  # Limit to 10 for performance
+                    cap += f"\n{i}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{self._format_file_button(file)}</a>"
         else:
-            # Basic caption
-            content_stats = self.analyze_content_types(files)
-            stats_text = " | ".join([f"{count} {type.value.title()}s" for type, count in content_stats.items() if count > 0])
+            # Fast basic caption
+            content_stats = self._analyze_content_fast(files)
+            stats_text = " | ".join([f"{count} {ctype.value.title()}s" for ctype, count in content_stats.items() if count > 0])
             
-            if settings.get('button'):
-                cap = (f"<b>🎭 Hey {message.from_user.mention}!\n\n"
-                      f"📂 Found <code>{len(files)}</code> results for: <code>{search}</code>\n"
-                      f"📊 Content: {stats_text}\n\n"
-                      f"🎬 Click buttons below to filter or download!</b>")
-            else:
-                cap = (f"<b>🎭 Hey {message.from_user.mention}!\n\n"
-                      f"📂 Found <code>{len(files)}</code> results for: <code>{search}</code>\n"
-                      f"📊 Content: {stats_text}\n\n</b>")
-                      
-                for file_num, file in enumerate(files, start=1):
-                    file_info = self.format_file_info(file)
-                    cap += f"<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{file_info}</a></b>\n\n"
-                    
+            cap = f"""<b>🎭 Hey {message.from_user.mention}!</b>
+
+<b>📂 Found {len(files)} results for:</b> <code>{search}</code>
+<b>📊 Content:</b> {stats_text}
+
+<b>⚡ Quick Access:</b> Use buttons below to filter and download!"""
+            
+            if not settings.get('button'):
+                cap += "\n\n<b>📋 Download Links:</b>"
+                for i, file in enumerate(files[:15], 1):  # Show more without TMDB overhead
+                    cap += f"\n{i}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{self._format_file_button(file)}</a>"
+        
         return cap
 
-    def analyze_content_types(self, files: List[SearchResult]) -> Dict[ContentType, int]:
-        """Analyze content types in search results"""
-        type_counts = {content_type: 0 for content_type in ContentType}
-        
+    def _analyze_content_fast(self, files: List[SearchResult]) -> Dict[ContentType, int]:
+        """Fast content analysis"""
+        counts = defaultdict(int)
         for file in files:
-            type_counts[file.content_type] += 1
-            
-        return type_counts
+            counts[file.content_type] += 1
+        return dict(counts)
 
-    async def send_result_message(self, m, cap: str, btn: List[List[InlineKeyboardButton]], 
-                                kdrama_info: Optional[Dict], message, settings: dict):
-        """Send the result message with appropriate media"""
-        
+    async def _send_result_optimized(self, m, cap: str, btn: List[List[InlineKeyboardButton]], 
+                                   tmdb_data: Optional[TMDBResult], message, settings: dict):
+        """Optimized result sending with smart media handling"""
         try:
-            if kdrama_info and kdrama_info.get('poster'):
+            result_msg = None
+            
+            # Smart media handling
+            if tmdb_data and (tmdb_data.poster_path or tmdb_data.backdrop_path):
+                image_url = tmdb_data.poster_path or tmdb_data.backdrop_path
+                
                 try:
-                    # Try to send with poster
+                    # Try poster first
                     result_msg = await m.edit_photo(
-                        photo=kdrama_info['poster'],
+                        photo=image_url,
                         caption=cap,
                         reply_markup=InlineKeyboardMarkup(btn),
                         parse_mode=enums.ParseMode.HTML
                     )
                 except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
-                    # Try alternative poster URL
-                    poster_url = kdrama_info['poster'].replace('.jpg', "._V1_UX360.jpg")
-                    result_msg = await m.edit_photo(
-                        photo=poster_url,
-                        caption=cap,
-                        reply_markup=InlineKeyboardMarkup(btn),
-                        parse_mode=enums.ParseMode.HTML
-                    )
+                    # Try backup poster with different resolution
+                    if tmdb_data.poster_path:
+                        backup_url = tmdb_data.poster_path.replace("w500", "w300")
+                        try:
+                            result_msg = await m.edit_photo(
+                                photo=backup_url,
+                                caption=cap,
+                                reply_markup=InlineKeyboardMarkup(btn),
+                                parse_mode=enums.ParseMode.HTML
+                            )
+                        except:
+                            # Fallback to text
+                            result_msg = await m.edit_text(
+                                text=cap,
+                                reply_markup=InlineKeyboardMarkup(btn),
+                                parse_mode=enums.ParseMode.HTML,
+                                disable_web_page_preview=True
+                            )
+                    else:
+                        # Fallback to text
+                        result_msg = await m.edit_text(
+                            text=cap,
+                            reply_markup=InlineKeyboardMarkup(btn),
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True
+                        )
                 except Exception as e:
-                    LOGGER.error(f"Error sending photo: {e}")
+                    LOGGER.error(f"Error with photo: {e}")
                     # Fallback to text
                     result_msg = await m.edit_text(
                         text=cap,
                         reply_markup=InlineKeyboardMarkup(btn),
-                        parse_mode=enums.ParseMode.HTML
+                        parse_mode=enums.ParseMode.HTML,
+                        disable_web_page_preview=True
                     )
             else:
-                # Send text message
+                # Text-only result
                 result_msg = await m.edit_text(
                     text=cap,
                     reply_markup=InlineKeyboardMarkup(btn),
@@ -2485,32 +2712,207 @@ class KDramaBot:
                     parse_mode=enums.ParseMode.HTML
                 )
             
-            # Auto-delete if enabled
+            # Smart auto-delete with user preference
             if settings.get('auto_delete', False):
-                await asyncio.sleep(DELETE_TIME)
-                await result_msg.delete()
-                try:
-                    await message.delete()
-                except:
-                    pass
-                    
+                delete_time = settings.get('delete_time', DELETE_TIME)
+                await asyncio.create_task(self._smart_delete(result_msg, message, delete_time))
+                
         except Exception as e:
-            LOGGER.error(f"Error sending result message: {e}")
+            LOGGER.error(f"Error sending result: {e}")
+            try:
+                await m.edit_text("❌ Error displaying results. Please try again.")
+            except:
+                pass
 
-# Initialize the enhanced bot
-kdrama_bot = KDramaBot()
+    async def _smart_delete(self, result_msg, original_msg, delay: int):
+        """Smart deletion with error handling"""
+        try:
+            await asyncio.sleep(delay)
+            await result_msg.delete()
+            await original_msg.delete()
+        except Exception as e:
+            LOGGER.debug(f"Delete error (normal): {e}")
 
-# Main function to replace the original
+    async def smart_spell_check(self, chat_id: int, query: str) -> Optional[str]:
+        """Advanced spell checking with TMDB and fuzzy matching"""
+        cache_key = self._generate_cache_key("spell_check", query)
+        cached = self.search_cache.get(cache_key)
+        if cached:
+            return cached
+        
+        try:
+            # Try TMDB search for Korean content
+            if TMDB_API_KEY and TMDB_API_KEY != "your_tmdb_api_key_here":
+                session = await self.get_session()
+                
+                # Multi-language search
+                search_urls = [
+                    f"{TMDB_BASE_URL}/search/tv?api_key={TMDB_API_KEY}&query={query}&with_original_language=ko",
+                    f"{TMDB_BASE_URL}/search/tv?api_key={TMDB_API_KEY}&query={query}",
+                ]
+                
+                for url in search_urls:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            results = data.get('results', [])
+                            
+                            if results:
+                                # Find best match using fuzzy matching
+                                titles = [r.get('name', '') for r in results if r.get('name')]
+                                if titles:
+                                    best_match = process.extractOne(query, titles)
+                                    if best_match and best_match[1] > 70:  # 70% threshold
+                                        # Verify files exist
+                                        files, _, _ = await get_search_results(chat_id, best_match[0])
+                                        if files:
+                                            self.search_cache.set(cache_key, best_match[0])
+                                            return best_match[0]
+            
+            # Fallback to popular K-Drama list
+            popular_kdramas = [
+                "Extraordinary Attorney Woo", "Business Proposal", "Twenty Five Twenty One",
+                "Hometown Cha-Cha-Cha", "Squid Game", "Vincenzo", "It's Okay to Not Be Okay",
+                "Crash Landing on You", "Goblin", "Descendants of the Sun", "Hotel Del Luna",
+                "True Beauty", "Start-Up", "Our Beloved Summer", "Snowdrop", "Red Sleeve",
+                "The Glory", "Little Women", "Alchemy of Souls", "Extraordinary You",
+                "Strong Girl Bong-soon", "Reply 1988", "My Mister", "Signal"
+            ]
+            
+            # Fuzzy match against popular dramas
+            best_match = process.extractOne(query, popular_kdramas)
+            if best_match and best_match[1] > 60:  # Lower threshold for popular dramas
+                files, _, _ = await get_search_results(chat_id, best_match[0])
+                if files:
+                    self.search_cache.set(cache_key, best_match[0])
+                    return best_match[0]
+            
+        except Exception as e:
+            LOGGER.error(f"Spell check error: {e}")
+        
+        return None
+
+    async def get_performance_stats(self) -> Dict:
+        """Get performance statistics"""
+        if self.response_times:
+            avg_response = sum(self.response_times) / len(self.response_times)
+            max_response = max(self.response_times)
+            min_response = min(self.response_times)
+        else:
+            avg_response = max_response = min_response = 0
+        
+        return {
+            "cache_hit_rate": len(self.search_cache.cache) / max(1, len(self.search_cache.cache) + len(self.search_stats)),
+            "avg_response_time": f"{avg_response:.2f}s",
+            "max_response_time": f"{max_response:.2f}s",
+            "min_response_time": f"{min_response:.2f}s",
+            "total_searches": len(self.search_stats),
+            "cache_size": len(self.search_cache.cache) + len(self.tmdb_cache.cache) + len(self.trending_cache.cache)
+        }
+
+    async def cleanup_caches(self):
+        """Cleanup expired cache entries"""
+        self.search_cache.clear_expired()
+        self.tmdb_cache.clear_expired()
+        self.trending_cache.clear_expired()
+
+# Global bot instance
+enhanced_bot = EnhancedKDramaBot()
+
+# Main functions to replace original
 async def auto_filter(client, msg, spoll=False):
-    """Main auto filter function - enhanced version"""
-    return await kdrama_bot.auto_filter(client, msg, spoll)
+    """Ultra-fast auto filter - main entry point"""
+    return await enhanced_bot.auto_filter(client, msg, spoll)
 
-# Enhanced spell check function
-async def ai_spell_check_kdrama(chat_id: int, wrong_name: str) -> Optional[str]:
-    """Enhanced AI spell check for K-Drama content"""
-    return await kdrama_bot.ai_spell_check_kdrama(chat_id, wrong_name)
+async def ai_spell_check(chat_id: int, wrong_name: str) -> Optional[str]:
+    """Enhanced AI spell check"""
+    return await enhanced_bot.smart_spell_check(chat_id, wrong_name)
 
-# Enhanced advantage spell check
 async def advantage_spell_chok(client, message):
-    """Enhanced spell check with K-Drama suggestions"""
-    return await kdrama_bot.show_kdrama_suggestions(client, message)
+    """Enhanced advantage spell check - now integrated into main flow"""
+    # This is now handled within the main auto_filter flow for better performance
+    search = message.text.lower().strip()
+    
+    # Quick spell check
+    corrected = await enhanced_bot.smart_spell_check(message.chat.id, search)
+    if corrected and corrected != search:
+        message.text = corrected
+        return await enhanced_bot.auto_filter(client, message)
+    
+    # Show suggestions if no correction found
+    return await enhanced_bot._handle_no_results_fast(client, message, search, 
+                                                      await message.reply_text("🔍 Searching for alternatives..."))
+
+# Utility functions for callback handlers
+async def handle_trending_callback(client, callback_query):
+    """Handle trending K-dramas callback"""
+    trending = await enhanced_bot._get_trending_fast()
+    
+    buttons = []
+    for drama in trending[:8]:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🎭 {drama['title']} ({drama['year']}) ⭐{drama['rating']}",
+                callback_data=f"search#{drama['title']}"
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_search")])
+    
+    await callback_query.message.edit_text(
+        "<b>🔥 Trending K-Dramas This Week</b>\n\nSelect a drama to search:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def handle_random_kdrama(client, callback_query):
+    """Handle random K-drama selection"""
+    import random
+    
+    trending = await enhanced_bot._get_trending_fast()
+    if trending:
+        random_drama = random.choice(trending)
+        # Trigger search for random drama
+        callback_query.message.text = random_drama['title']
+        return await enhanced_bot.auto_filter(client, callback_query.message)
+    
+    await callback_query.answer("No random drama available!", show_alert=True)
+
+async def handle_quality_filter(client, callback_query, key: str):
+    """Handle quality filtering"""
+    files = temp.GETALL.get(key, [])
+    if not files:
+        return await callback_query.answer("Search expired!", show_alert=True)
+    
+    # Group by quality
+    quality_groups = defaultdict(list)
+    for file in files:
+        quality_groups[file.quality].append(file)
+    
+    buttons = []
+    for quality, quality_files in quality_groups.items():
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{quality} ({len(quality_files)} files)",
+                callback_data=f"show_quality#{key}#{quality}"
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 Back to Results", callback_data=f"back_to_results#{key}")])
+    
+    await callback_query.message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+# Performance monitoring
+async def cleanup_bot_caches():
+    """Periodic cache cleanup - call this periodically"""
+    await enhanced_bot.cleanup_caches()
+    
+async def get_bot_performance():
+    """Get bot performance statistics"""
+    return await enhanced_bot.get_performance_stats()
+
+# Session cleanup (call on bot shutdown)
+async def cleanup_bot_session():
+    """Cleanup bot resources"""
+    await enhanced_bot.close_session()

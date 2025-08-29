@@ -29,7 +29,13 @@ import tracemalloc
 from .services.enhanced_filter import EnhancedAutoFilterService
 from .services.quality import QualityAnalyzer
 from .services.tmdb import AdvancedTMDBService
-# Add other missing imports
+
+# At the top of pm_filter.py
+from pyrogram.errors import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
+from pyrogram import enums
+
+# Your existing imports
+# Add any missing service imports based on your project structure# Add other missing imports
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"

@@ -333,1010 +333,230 @@ async def track_referral_usage(user_id, action="view"):
         LOGGER.error(f"Failed to track referral {action}: {e}")
 
 
-async def create_keyboard_enhanced(files, key, req, offset, n_offset, total, page_size, settings, user_id):
-    """Create enhanced keyboard with new features"""
-    buttons = []
-    
-    # Add enhanced action buttons
-    buttons.extend(create_action_buttons(key))
-    
-    # Add file buttons with bookmark indicators if enabled
-    if settings.get('button', True):
-        file_buttons = create_file_buttons_enhanced(files, key, user_id)
-        buttons.extend(file_buttons)
-    
-    # Add enhanced pagination buttons
-    current_page, total_pages, prev_offset = calculate_pagination_info(
-        offset, total, page_size
-    )
-    
-    pagination_buttons = create_pagination_buttons_enhanced(
-        req, key, offset, n_offset, current_page, total_pages, prev_offset
-    )
-    buttons.extend(pagination_buttons)
-    
-    return InlineKeyboardMarkup(buttons)
-
-async def update_message_enhanced(query, settings, files, keyboard, total, search, offset):
-    """Update message with enhanced features and statistics"""
-    try:
-        if settings.get('button', True):
-            # Only update keyboard for button mode
-            await query.edit_message_reply_markup(reply_markup=keyboard)
-        else:
-            # Enhanced caption with statistics
-            remaining_seconds = calculate_time_difference()
-            
-            # Add enhanced statistics
-            file_stats = await calculate_file_statistics(files)
-            user_stats = f"\n📊 <b>Quick Stats:</b>\n{file_stats}"
-            
-            cap = await get_cap(settings, remaining_seconds, files, query, total, search, offset)
-            enhanced_cap = cap + user_stats
-            
-            await query.message.edit_text(
-                text=enhanced_cap,
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-                parse_mode=enums.ParseMode.HTML
-            )
-    except MessageNotModified:
-        # Message content is the same, ignore this error
-        pass
-    except Exception as e:
-        LOGGER.error(f"Failed to update enhanced message: {e}")
-        raise
-
-async def calculate_file_statistics(files):
-    """Calculate and format file statistics"""
-    try:import math
-import logging
-from datetime import datetime, timedelta
-from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import MessageNotModified
-import pytz
-import asyncio
-from collections import defaultdict
-import json
-
-# Assuming these are imported from your modules
-# from your_modules import script, temp, BUTTONS, FRESH, get_search_results, get_settings, save_group_settings, get_cap, silent_size, extract_tag, clean_filename
-
-LOGGER = logging.getLogger(__name__)
-TIMEZONE = pytz.timezone('Asia/Kolkata')
-DEFAULT_PAGE_SIZE = 10
-
-# New feature: Analytics and rate limiting
-PAGINATION_ANALYTICS = defaultdict(lambda: {
-    'views': 0, 'last_access': None, 'user_agents': set(),
-    'popular_queries': defaultdict(int), 'peak_hours': defaultdict(int)
-})
-USER_RATE_LIMIT = defaultdict(lambda: {'count': 0, 'reset_time': None})
-RATE_LIMIT_MAX = 50  # Max pagination requests per hour per user
-
-# New feature: Bookmarks and favorites
-USER_BOOKMARKS = defaultdict(set)
-FAVORITE_SEARCHES = defaultdict(list)
-
-class PaginationError(Exception):
-    """Custom exception for pagination errors"""
-    pass
-
-class RateLimitExceeded(Exception):
-    """Exception for rate limit violations"""
-    pass
-
-class BookmarkManager:
-    """Manage user bookmarks and favorites"""
-    
-    @staticmethod
-    async def add_bookmark(user_id, file_id, file_name):
-        """Add file to user bookmarks"""
-        USER_BOOKMARKS[user_id].add((file_id, file_name))
-        LOGGER.info(f"User {user_id} bookmarked file {file_id}")
-    
-    @staticmethod
-    async def remove_bookmark(user_id, file_id):
-        """Remove file from user bookmarks"""
-        USER_BOOKMARKS[user_id] = {(fid, fname) for fid, fname in USER_BOOKMARKS[user_id] if fid != file_id}
-    
-    @staticmethod
-    async def get_bookmarks(user_id):
-        """Get user bookmarks"""
-        return list(USER_BOOKMARKS[user_id])
-    
-    @staticmethod
-    async def is_bookmarked(user_id, file_id):
-        """Check if file is bookmarked"""
-        return any(fid == file_id for fid, _ in USER_BOOKMARKS[user_id])
-
-class AdvancedFilter:
-    """Advanced filtering options"""
-    
-    @staticmethod
-    async def filter_by_quality(files, quality):
-        """Filter files by quality (720p, 1080p, etc.)"""
-        quality_keywords = {
-            '720p': ['720p', 'hd'],
-            '1080p': ['1080p', 'full hd', 'fhd'],
-            '4k': ['4k', '2160p', 'uhd'],
-            'cam': ['cam', 'camrip', 'ts'],
-            'web': ['web-dl', 'webrip', 'web']
-        }
-        
-        if quality.lower() in quality_keywords:
-            keywords = quality_keywords[quality.lower()]
-            return [f for f in files if any(kw in f.file_name.lower() for kw in keywords)]
-        return files
-    
-    @staticmethod
-    async def filter_by_size(files, min_size=None, max_size=None):
-        """Filter files by size range"""
-        filtered = files
-        if min_size:
-            filtered = [f for f in filtered if f.file_size >= min_size * 1024 * 1024]  # MB to bytes
-        if max_size:
-            filtered = [f for f in filtered if f.file_size <= max_size * 1024 * 1024]
-        return filtered
-    
-    @staticmethod
-    async def filter_by_format(files, format_type):
-        """Filter files by format (video, subtitle, etc.)"""
-        format_extensions = {
-            'video': ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'],
-            'subtitle': ['.srt', '.vtt', '.ass', '.ssa', '.sub'],
-            'audio': ['.mp3', '.aac', '.flac', '.wav', '.ogg']
-        }
-        
-        if format_type.lower() in format_extensions:
-            extensions = format_extensions[format_type.lower()]
-            return [f for f in files if any(f.file_name.lower().endswith(ext) for ext in extensions)]
-        return files
-
-class SmartSort:
-    """Smart sorting algorithms"""
-    
-    @staticmethod
-    async def sort_by_relevance(files, search_query):
-        """Sort files by relevance to search query"""
-        def relevance_score(file):
-            filename = file.file_name.lower()
-            query_words = search_query.lower().split()
-            score = 0
-            
-            # Exact match bonus
-            if search_query.lower() in filename:
-                score += 10
-            
-            # Word match scoring
-            for word in query_words:
-                if word in filename:
-                    score += 5
-            
-            # File size preference (larger files often better quality)
-            score += min(file.file_size / (1024 * 1024 * 100), 5)  # Max 5 points for size
-            
-            return score
-        
-        return sorted(files, key=relevance_score, reverse=True)
-    
-    @staticmethod
-    async def sort_by_popularity(files, analytics_data=None):
-        """Sort files by download/view popularity"""
-        # In a real implementation, you'd have download/view stats
-        # For now, sort by file size as proxy for popularity
-        return sorted(files, key=lambda x: x.file_size, reverse=True)
-    
-    @staticmethod
-    async def sort_by_date(files):
-        """Sort files by upload/creation date"""
-        # This would require file metadata with dates
-        # For now, sort by file_id as proxy (newer files often have higher IDs)
-        return sorted(files, key=lambda x: x.file_id, reverse=True)
-
-async def check_rate_limit(user_id):
-    """Check and enforce rate limiting"""
-    current_time = datetime.now(TIMEZONE)
-    user_data = USER_RATE_LIMIT[user_id]
-    
-    # Reset counter if hour has passed
-    if user_data['reset_time'] is None or current_time >= user_data['reset_time']:
-        user_data['count'] = 0
-        user_data['reset_time'] = current_time + timedelta(hours=1)
-    
-    # Check if limit exceeded
-    if user_data['count'] >= RATE_LIMIT_MAX:
-        raise RateLimitExceeded(f"Rate limit exceeded. Try again after {user_data['reset_time'].strftime('%H:%M')}")
-    
-    user_data['count'] += 1
-
-async def log_analytics(user_id, search_query, action="page_view"):
-    """Log analytics data"""
-    try:
-        current_time = datetime.now(TIMEZONE)
-        analytics = PAGINATION_ANALYTICS[user_id]
-        
-        analytics['views'] += 1
-        analytics['last_access'] = current_time
-        analytics['popular_queries'][search_query] += 1
-        analytics['peak_hours'][current_time.hour] += 1
-        
-        # Log to file or database in production
-        LOGGER.info(f"Analytics: User {user_id}, Action: {action}, Query: {search_query}")
-    except Exception as e:
-        LOGGER.warning(f"Analytics logging failed: {e}")
-
-def parse_callback_data(callback_data):
-    """Parse and validate callback data"""
-    try:
-        parts = callback_data.split("_")
-        if len(parts) != 4:
-            raise ValueError("Invalid callback data format")
-        
-        ident, req, key, offset = parts
-        req = int(req)
-        offset = int(offset) if offset != 'None' else 0
-        
-        return ident, req, key, offset
-    except (ValueError, IndexError) as e:
-        raise PaginationError(f"Invalid callback data: {e}")
-
-def validate_user_permission(query_user_id, required_user_id):
-    """Check if user has permission to use pagination"""
-    return required_user_id in [query_user_id, 0]
-
-async def get_search_query(key):
-    """Get search query from buttons or fresh cache"""
-    search = BUTTONS.get(key) or FRESH.get(key)
-    if not search:
-        raise PaginationError("Search query not found or expired")
-    return search
-
-def calculate_pagination_info(offset, total, page_size):
-    """Calculate pagination information"""
-    current_page = math.ceil(offset / page_size) + 1 if offset > 0 else 1
-    total_pages = math.ceil(total / page_size) if total > 0 else 1
-    
-    # Calculate previous offset
-    if offset > page_size:
-        prev_offset = offset - page_size
-    elif offset > 0:
-        prev_offset = 0
-    else:
-        prev_offset = None
-    
-    return current_page, total_pages, prev_offset
-
-def create_file_buttons(files, key):
-    """Create file selection buttons"""
-    buttons = []
-    for file in files:
-        button_text = f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}"
-        buttons.append([
-            InlineKeyboardButton(
-                text=button_text, 
-                callback_data=f'file#{file.file_id}'
-            )
-        ])
-    return buttons
-
-def create_action_buttons(key):
-    """Create quality, season, and send all buttons"""
-    return [
-        [
-            InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-            InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
-        ],
-        [
-            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-        ]
-    ]
-
-def create_pagination_buttons(req, key, offset, n_offset, current_page, total_pages, prev_offset):
-    """Create pagination navigation buttons"""
-    buttons = []
-    
-    if n_offset == 0:  # Last page
-        if prev_offset is not None:
-            buttons.append([
-                InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"),
-                InlineKeyboardButton(f"{current_page} / {total_pages}", callback_data="pages")
-            ])
-        else:
-            buttons.append([
-                InlineKeyboardButton(f"{current_page} / {total_pages}", callback_data="pages")
-            ])
-    elif prev_offset is None:  # First page
-        buttons.append([
-            InlineKeyboardButton("📄 Page", callback_data="pages"),
-            InlineKeyboardButton(f"{current_page} / {total_pages}", callback_data="pages"),
-            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-        ])
-    else:  # Middle page
-        buttons.append([
-            InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"),
-            InlineKeyboardButton(f"{current_page} / {total_pages}", callback_data="pages"),
-            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-        ])
-    
-    return buttons
-
-async def get_page_size(settings):
-    """Get page size from settings with fallback"""
-    try:
-        if settings.get('max_btn', True):
-            return DEFAULT_PAGE_SIZE
-        else:
-            return int(getattr(settings, 'MAX_B_TN', DEFAULT_PAGE_SIZE))
-    except (ValueError, AttributeError):
-        return DEFAULT_PAGE_SIZE
-
-def calculate_time_difference():
-    """Calculate time difference for processing time display"""
-    try:
-        curr_time = datetime.now(TIMEZONE).time()
-        # This seems to be calculating processing time, but the original logic is unclear
-        # Returning a default value for now
-        return "0.00"
-    except Exception as e:
-        LOGGER.warning(f"Time calculation failed: {e}")
-        return "0.00"
-
 @Client.on_callback_query(filters.regex(r"^next"))
 async def next_page(bot, query):
-    """Handle pagination for search results with enhanced features"""
+    """Enhanced pagination handler with improved user experience"""
     try:
-        # Rate limiting check
-        await check_rate_limit(query.from_user.id)
+        # Show loading indicator immediately
+        await query.answer("Loading...", show_alert=False)
         
-        # Parse callback data
-        ident, req, key, offset = parse_callback_data(query.data)
-        
-        # Validate user permission
-        if not validate_user_permission(query.from_user.id, req):
-            await query.answer(
-                script.ALRT_TXT.format(query.from_user.first_name), 
-                show_alert=True
-            )
-            return
-        
-        # Get search query
+        # Parse callback data with validation
         try:
-            search = await get_search_query(key)
-        except PaginationError:
+            ident, req, key, offset = query.data.split("_")
+            offset = max(0, int(offset))  # Ensure non-negative offset
+            req = int(req)
+        except (ValueError, IndexError) as e:
+            await query.answer("❌ Invalid request data", show_alert=True)
+            return
+        
+        # Permission check with better error message
+        if req not in [query.from_user.id, 0]:
             await query.answer(
-                script.OLD_ALRT_TXT.format(query.from_user.first_name), 
+                f"🚫 {query.from_user.first_name}, only the person who initiated this search can navigate pages",
                 show_alert=True
             )
             return
         
-        # Log analytics
-        await log_analytics(query.from_user.id, search, "pagination")
-        
-        # Get search results
-        files, n_offset, total = await get_search_results(
-            query.message.chat.id, 
-            search, 
-            offset=offset, 
-            filter=True
-        )
-        
-        # Validate results
-        n_offset = int(n_offset) if n_offset else 0
-        if not files:
-            await query.answer("No more results found", show_alert=True)
+        # Get search data with fallback
+        search = BUTTONS.get(key) or FRESH.get(key)
+        if not search:
+            await query.answer(
+                f"⏰ {query.from_user.first_name}, this search has expired. Please start a new search.",
+                show_alert=True
+            )
             return
         
-        # Apply smart sorting if enabled
-        user_settings = await get_user_preferences(query.from_user.id)
-        if user_settings.get('smart_sort', True):
-            files = await SmartSort.sort_by_relevance(files, search)
+        # Fetch results with error handling
+        try:
+            files, n_offset, total = await get_search_results(
+                query.message.chat.id, search, offset=offset, filter=True
+            )
+            n_offset = max(0, int(n_offset) if n_offset else 0)
+        except Exception as e:
+            LOGGER.error(f"Error fetching search results: {e}")
+            await query.answer("❌ Failed to load results. Please try again.", show_alert=True)
+            return
         
-        # Store results in temp storage
+        if not files:
+            await query.answer("📭 No more results found", show_alert=True)
+            return
+        
+        # Cache results
         temp.GETALL[key] = files
         temp.SHORT[query.from_user.id] = query.message.chat.id
         
-        # Get settings
+        # Get settings with defaults
         settings = await get_settings(query.message.chat.id)
-        page_size = await get_page_size(settings)
+        show_buttons = settings.get('button', True)
+        max_btn_setting = settings.get('max_btn', True)
         
-        # Create keyboard with enhanced features
-        keyboard = await create_keyboard_enhanced(
-            files, key, req, offset, n_offset, total, page_size, settings, query.from_user.id
-        )
+        # Build file buttons if enabled
+        btn = []
         
-        # Update message
-        await update_message_enhanced(query, settings, files, keyboard, total, search, offset)
-        
-        await query.answer("✅ Page updated")
-        
-    except RateLimitExceeded as e:
-        await query.answer(f"⏰ {str(e)}", show_alert=True)
-    except PaginationError as e:
-        LOGGER.warning(f"Pagination error: {e}")
-        await query.answer("❌ Invalid request", show_alert=True)
-    except Exception as e:
-        LOGGER.error(f"Error in pagination handler: {e}")
-        await query.answer("❌ Something went wrong", show_alert=True)
-
-# New callback handlers for enhanced features
-
-@Client.on_callback_query(filters.regex(r"^bookmark#"))
-async def handle_bookmark(bot, query):
-    """Handle bookmark actions"""
-    try:
-        _, action, file_id = query.data.split("#")
-        user_id = query.from_user.id
-        
-        if action == "bookmark":
-            # Get file info from temp storage or database
-            file_name = "Unknown File"  # Would get from database in real implementation
-            await BookmarkManager.add_bookmark(user_id, file_id, file_name)
-            await query.answer("🔖 Bookmarked!", show_alert=False)
-        elif action == "unbookmark":
-            await BookmarkManager.remove_bookmark(user_id, file_id)
-            await query.answer("❌ Removed from bookmarks", show_alert=False)
-        
-        # Refresh the current page to update bookmark indicators
-        # This would trigger the pagination handler again
-        
-    except Exception as e:
-        LOGGER.error(f"Bookmark error: {e}")
-        await query.answer("❌ Bookmark action failed", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^filter#"))
-async def handle_filter(bot, query):
-    """Handle advanced filtering options"""
-    try:
-        _, key, page = query.data.split("#")
-        
-        filter_keyboard = [
-            [
-                InlineKeyboardButton("📺 720p", callback_data=f"apply_filter#{key}#quality#720p"),
-                InlineKeyboardButton("🎬 1080p", callback_data=f"apply_filter#{key}#quality#1080p"),
-                InlineKeyboardButton("🎪 4K", callback_data=f"apply_filter#{key}#quality#4k")
-            ],
-            [
-                InlineKeyboardButton("📱 Small (<500MB)", callback_data=f"apply_filter#{key}#size#small"),
-                InlineKeyboardButton("💽 Medium (500MB-2GB)", callback_data=f"apply_filter#{key}#size#medium"),
-                InlineKeyboardButton("📀 Large (>2GB)", callback_data=f"apply_filter#{key}#size#large")
-            ],
-            [
-                InlineKeyboardButton("🎥 Video Only", callback_data=f"apply_filter#{key}#format#video"),
-                InlineKeyboardButton("📝 Subtitles Only", callback_data=f"apply_filter#{key}#format#subtitle")
-            ],
-            [
-                InlineKeyboardButton("🔄 Clear Filters", callback_data=f"clear_filters#{key}"),
-                InlineKeyboardButton("⬅️ Back", callback_data=f"next_0_{key}_0")
-            ]
-        ]
-        
-        await query.message.edit_text(
-            "🔍 <b>Advanced Filters</b>\n\nSelect filters to refine your search results:",
-            reply_markup=InlineKeyboardMarkup(filter_keyboard),
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Filter menu error: {e}")
-        await query.answer("❌ Filter menu failed", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^sort#"))
-async def handle_sort(bot, query):
-    """Handle sorting options"""
-    try:
-        _, key, page = query.data.split("#")
-        
-        sort_keyboard = [
-            [
-                InlineKeyboardButton("🎯 Relevance", callback_data=f"apply_sort#{key}#relevance"),
-                InlineKeyboardButton("⭐ Popularity", callback_data=f"apply_sort#{key}#popularity")
-            ],
-            [
-                InlineKeyboardButton("📅 Date Added", callback_data=f"apply_sort#{key}#date"),
-                InlineKeyboardButton("📏 File Size", callback_data=f"apply_sort#{key}#size")
-            ],
-            [
-                InlineKeyboardButton("🔤 Name A-Z", callback_data=f"apply_sort#{key}#name_asc"),
-                InlineKeyboardButton("🔤 Name Z-A", callback_data=f"apply_sort#{key}#name_desc")
-            ],
-            [
-                InlineKeyboardButton("⬅️ Back", callback_data=f"next_0_{key}_0")
-            ]
-        ]
-        
-        await query.message.edit_text(
-            "📊 <b>Sort Options</b>\n\nChoose how to sort your results:",
-            reply_markup=InlineKeyboardMarkup(sort_keyboard),
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Sort menu error: {e}")
-        await query.answer("❌ Sort menu failed", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^bookmarks#"))
-async def show_bookmarks(bot, query):
-    """Show user bookmarks"""
-    try:
-        user_id = query.from_user.id
-        bookmarks = await BookmarkManager.get_bookmarks(user_id)
-        
-        if not bookmarks:
-            await query.answer("📚 No bookmarks yet! Star some files to see them here.", show_alert=True)
-            return
-        
-        bookmark_buttons = []
-        for file_id, file_name in bookmarks[:20]:  # Limit to 20 bookmarks per page
-            bookmark_buttons.append([
-                InlineKeyboardButton(
-                    f"🔖 {file_name[:40]}...",
-                    callback_data=f"file#{file_id}"
-                ),
-                InlineKeyboardButton("❌", callback_data=f"bookmark#unbookmark#{file_id}")
-            ])
-        
-        bookmark_buttons.append([
-            InlineKeyboardButton("⬅️ Back", callback_data=f"next_0_{query.data.split('#')[1]}_0")
+        # Add filter buttons at top
+        btn.append([
+            InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+            InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
         ])
         
-        await query.message.edit_text(
-            f"🔖 <b>Your Bookmarks</b> ({len(bookmarks)} total)\n\n"
-            "Click on any file to view details or ❌ to remove bookmark:",
-            reply_markup=InlineKeyboardMarkup(bookmark_buttons),
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Bookmarks display error: {e}")
-        await query.answer("❌ Unable to load bookmarks", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^analytics#"))
-async def show_analytics(bot, query):
-    """Show user analytics and popular content"""
-    try:
-        user_id = query.from_user.id
-        analytics = PAGINATION_ANALYTICS[user_id]
-        
-        # Get top searches
-        top_searches = sorted(analytics['popular_queries'].items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        # Get peak hour
-        peak_hours = analytics['peak_hours']
-        peak_hour = max(peak_hours, key=peak_hours.get) if peak_hours else 0
-        
-        analytics_text = (
-            f"📈 <b>Your Analytics</b>\n\n"
-            f"👁️ Total Views: {analytics['views']}\n"
-            f"🕐 Most Active Hour: {peak_hour}:00\n"
-            f"📅 Last Activity: {analytics['last_access'].strftime('%d/%m/%Y %H:%M') if analytics['last_access'] else 'Never'}\n\n"
-            f"🔍 <b>Top Searches:</b>\n"
-        )
-        
-        for i, (query_text, count) in enumerate(top_searches, 1):
-            analytics_text += f"{i}. {query_text[:30]}... ({count} times)\n"
-        
-        back_button = [[InlineKeyboardButton("⬅️ Back", callback_data=f"next_0_{query.data.split('#')[1]}_0")]]
-        
-        await query.message.edit_text(
-            analytics_text,
-            reply_markup=InlineKeyboardMarkup(back_button),
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Analytics display error: {e}")
-        await query.answer("❌ Unable to load analytics", show_alert=True)
-
-async def calculate_file_statistics(files):
-    """Calculate and format file statistics"""
-    try:
-        if not files:
-            return "No files to analyze"
-        
-        total_size = sum(f.file_size for f in files)
-        avg_size = total_size / len(files)
-        
-        # Quality distribution
-        quality_count = {'720p': 0, '1080p': 0, '4K': 0, 'Other': 0}
-        for file in files:
-            filename = file.file_name.lower()
-            if '720p' in filename:
-                quality_count['720p'] += 1
-            elif '1080p' in filename:
-                quality_count['1080p'] += 1
-            elif '4k' in filename or '2160p' in filename:
-                quality_count['4K'] += 1
-            else:
-                quality_count['Other'] += 1
-        
-        # Format distribution
-        format_count = {'MP4': 0, 'MKV': 0, 'AVI': 0, 'Other': 0}
-        for file in files:
-            filename = file.file_name.lower()
-            if '.mp4' in filename:
-                format_count['MP4'] += 1
-            elif '.mkv' in filename:
-                format_count['MKV'] += 1
-            elif '.avi' in filename:
-                format_count['AVI'] += 1
-            else:
-                format_count['Other'] += 1
-        
-        stats = (
-            f"📁 Total: {len(files)} files | 💾 Size: {silent_size(total_size)}\n"
-            f"📊 Avg Size: {silent_size(int(avg_size))}\n"
-            f"🎬 Quality: 720p({quality_count['720p']}) | 1080p({quality_count['1080p']}) | 4K({quality_count['4K']})\n"
-            f"📂 Format: MP4({format_count['MP4']}) | MKV({format_count['MKV']}) | AVI({format_count['AVI']})"
-        )
-        
-        return stats
-    except Exception as e:
-        LOGGER.error(f"Statistics calculation failed: {e}")
-        return "Statistics unavailable"
-
-async def get_user_preferences(user_id):
-    """Get user preferences with defaults"""
-    # In a real implementation, this would load from database
-    # For now, return defaults
-    return {
-        'smart_sort': True,
-        'show_bookmarks': True,
-        'auto_bookmark_downloads': False,
-        'preferred_quality': '1080p',
-        'preferred_format': 'MP4',
-        'notifications_enabled': True
-    }
-
-# Advanced search and recommendation features
-class SearchRecommendations:
-    """Provide search recommendations and related queries"""
-    
-    @staticmethod
-    async def get_related_searches(search_query):
-        """Get related search suggestions"""
-        # In production, this would use ML/AI for better suggestions
-        query_words = search_query.lower().split()
-        suggestions = []
-        
-        # Basic related terms (would be more sophisticated in production)
-        related_terms = {
-            'movie': ['film', 'cinema', 'hollywood', 'bollywood'],
-            'series': ['tv show', 'season', 'episode', 'drama'],
-            'action': ['thriller', 'adventure', 'crime', 'war'],
-            'comedy': ['humor', 'funny', 'laugh', 'sitcom'],
-            'horror': ['scary', 'thriller', 'supernatural', 'zombie']
-        }
-        
-        for word in query_words:
-            if word in related_terms:
-                suggestions.extend(related_terms[word])
-        
-        return suggestions[:5]  # Return top 5 suggestions
-    
-    @staticmethod
-    async def get_trending_searches():
-        """Get currently trending searches"""
-        # In production, this would query analytics database
-        return [
-            "Latest Movies 2024",
-            "Popular TV Series",
-            "Action Movies",
-            "Marvel Movies",
-            "Korean Drama"
-        ]
-
-# Batch operations for power users
-class BatchOperations:
-    """Handle batch operations on files"""
-    
-    @staticmethod
-    async def bulk_bookmark(user_id, file_ids):
-        """Bookmark multiple files at once"""
-        success_count = 0
-        for file_id in file_ids:
-            try:
-                file_name = f"File_{file_id}"  # Would get real name from database
-                await BookmarkManager.add_bookmark(user_id, file_id, file_name)
-                success_count += 1
-            except Exception as e:
-                LOGGER.error(f"Failed to bookmark {file_id}: {e}")
-        
-        return success_count
-    
-    @staticmethod
-    async def export_bookmarks(user_id, format_type="json"):
-        """Export user bookmarks in various formats"""
-        bookmarks = await BookmarkManager.get_bookmarks(user_id)
-        
-        if format_type.lower() == "json":
-            return json.dumps({
-                "user_id": user_id,
-                "export_date": datetime.now(TIMEZONE).isoformat(),
-                "bookmarks": [{"file_id": fid, "file_name": fname} for fid, fname in bookmarks]
-            }, indent=2)
-        
-        elif format_type.lower() == "txt":
-            lines = [f"Bookmarks Export - {datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}\n"]
-            lines.extend([f"{fname} (ID: {fid})" for fid, fname in bookmarks])
-            return "\n".join(lines)
-        
-        return None
-
-# New callback handlers for advanced features
-@Client.on_callback_query(filters.regex(r"^apply_filter#"))
-async def apply_filter(bot, query):
-    """Apply selected filter to search results"""
-    try:
-        _, key, filter_type, filter_value = query.data.split("#")
-        
-        # Get current search and files
-        search = await get_search_query(key)
-        files = temp.GETALL.get(key, [])
-        
-        if not files:
-            await query.answer("❌ No files to filter", show_alert=True)
-            return
-        
-        # Apply the selected filter
-        filtered_files = files
-        if filter_type == "quality":
-            filtered_files = await AdvancedFilter.filter_by_quality(files, filter_value)
-        elif filter_type == "size":
-            size_ranges = {
-                "small": (None, 500),
-                "medium": (500, 2000),
-                "large": (2000, None)
-            }
-            if filter_value in size_ranges:
-                min_size, max_size = size_ranges[filter_value]
-                filtered_files = await AdvancedFilter.filter_by_size(files, min_size, max_size)
-        elif filter_type == "format":
-            filtered_files = await AdvancedFilter.filter_by_format(files, filter_value)
-        
-        # Update temp storage with filtered results
-        temp.GETALL[key] = filtered_files
-        
-        # Show filtered results
-        total = len(filtered_files)
-        if total == 0:
-            await query.answer("🔍 No files match the selected filter", show_alert=True)
-            return
-        
-        # Create new keyboard with filtered results
-        settings = await get_settings(query.message.chat.id)
-        keyboard = await create_keyboard_enhanced(
-            filtered_files[:10], key, 0, key, 0, total, 10, settings, query.from_user.id
-        )
-        
-        filter_info = f"🔍 <b>Filtered Results</b>\n\n"
-        filter_info += f"Applied Filter: {filter_type.title()} = {filter_value}\n"
-        filter_info += f"Results: {total} files\n\n"
-        
-        await query.message.edit_text(
-            filter_info + f"Showing filtered results for: <code>{search}</code>",
-            reply_markup=keyboard,
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-        await query.answer(f"✅ Filter applied! {total} results found")
-        
-    except Exception as e:
-        LOGGER.error(f"Filter application error: {e}")
-        await query.answer("❌ Filter failed", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^apply_sort#"))
-async def apply_sort(bot, query):
-    """Apply selected sorting to search results"""
-    try:
-        _, key, sort_type = query.data.split("#")
-        
-        # Get current search and files
-        search = await get_search_query(key)
-        files = temp.GETALL.get(key, [])
-        
-        if not files:
-            await query.answer("❌ No files to sort", show_alert=True)
-            return
-        
-        # Apply the selected sort
-        sorted_files = files
-        if sort_type == "relevance":
-            sorted_files = await SmartSort.sort_by_relevance(files, search)
-        elif sort_type == "popularity":
-            sorted_files = await SmartSort.sort_by_popularity(files)
-        elif sort_type == "date":
-            sorted_files = await SmartSort.sort_by_date(files)
-        elif sort_type == "size":
-            sorted_files = sorted(files, key=lambda x: x.file_size, reverse=True)
-        elif sort_type == "name_asc":
-            sorted_files = sorted(files, key=lambda x: x.file_name.lower())
-        elif sort_type == "name_desc":
-            sorted_files = sorted(files, key=lambda x: x.file_name.lower(), reverse=True)
-        
-        # Update temp storage with sorted results
-        temp.GETALL[key] = sorted_files
-        
-        # Show sorted results
-        settings = await get_settings(query.message.chat.id)
-        keyboard = await create_keyboard_enhanced(
-            sorted_files[:10], key, 0, key, 0, len(sorted_files), 10, settings, query.from_user.id
-        )
-        
-        sort_info = f"📊 <b>Sorted Results</b>\n\n"
-        sort_info += f"Sort Method: {sort_type.replace('_', ' ').title()}\n"
-        sort_info += f"Total Results: {len(sorted_files)} files\n\n"
-        
-        await query.message.edit_text(
-            sort_info + f"Showing sorted results for: <code>{search}</code>",
-            reply_markup=keyboard,
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-        await query.answer(f"✅ Sorted by {sort_type.replace('_', ' ')}")
-        
-    except Exception as e:
-        LOGGER.error(f"Sort application error: {e}")
-        await query.answer("❌ Sort failed", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^jump#"))
-async def page_jump(bot, query):
-    """Handle quick page jumping"""
-    try:
-        _, key, current_page = query.data.split("#")
-        
-        jump_buttons = []
-        current_page = int(current_page)
-        
-        # Create page jump options
-        page_options = []
-        if current_page > 10:
-            page_options.extend([1, 5, 10])
-        
-        page_options.extend([
-            max(1, current_page - 5),
-            max(1, current_page - 1),
-            current_page + 1,
-            current_page + 5,
-            current_page + 10
+        # Add send all button
+        btn.append([
+            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
         ])
         
-        # Remove duplicates and sort
-        page_options = sorted(list(set(page_options)))
+        # Add individual file buttons if enabled
+        if show_buttons:
+            file_buttons = [
+                [InlineKeyboardButton(
+                    text=f"{silent_size(file.file_size)} | {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
+                    callback_data=f'file#{file.file_id}'
+                )]
+                for file in files
+            ]
+            btn.extend(file_buttons)
         
-        # Create buttons for page options
-        for i, page in enumerate(page_options):
-            if i % 3 == 0:
-                jump_buttons.append([])
-            
-            offset = (page - 1) * 10  # Assuming 10 items per page
-            jump_buttons[-1].append(
-                InlineKeyboardButton(
-                    f"📄 {page}",
-                    callback_data=f"next_0_{key}_{offset}"
-                )
+        # Enhanced pagination logic
+        items_per_page = 10 if max_btn_setting else int(MAX_B_TN)
+        current_page = (offset // items_per_page) + 1
+        total_pages = math.ceil(total / items_per_page)
+        
+        # Calculate navigation offsets
+        prev_offset = max(0, offset - items_per_page) if offset > 0 else None
+        next_offset = n_offset if n_offset > offset else None
+        
+        # Build navigation row
+        nav_buttons = []
+        
+        if prev_offset is not None:
+            nav_buttons.append(
+                InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}")
             )
         
-        jump_buttons.append([
-            InlineKeyboardButton("⬅️ Back", callback_data=f"next_0_{key}_0")
-        ])
-        
-        await query.message.edit_text(
-            f"🔢 <b>Jump to Page</b>\n\nCurrent page: {current_page}\nSelect a page to jump to:",
-            reply_markup=InlineKeyboardMarkup(jump_buttons),
-            parse_mode=enums.ParseMode.HTML
+        # Page indicator with jump functionality
+        nav_buttons.append(
+            InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data=f"jump_{req}_{key}")
         )
         
-    except Exception as e:
-        LOGGER.error(f"Page jump error: {e}")
-        await query.answer("❌ Page jump failed", show_alert=True)
-
-# Background tasks for maintenance and optimization
-async def cleanup_expired_data():
-    """Clean up expired pagination data"""
-    try:
-        current_time = datetime.now(TIMEZONE)
-        expired_keys = []
+        if next_offset is not None:
+            nav_buttons.append(
+                InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{next_offset}")
+            )
         
-        # Clean up rate limit data older than 1 hour
-        for user_id, data in USER_RATE_LIMIT.items():
-            if data['reset_time'] and current_time >= data['reset_time']:
-                expired_keys.append(user_id)
+        # Add navigation only if there are multiple pages
+        if total_pages > 1:
+            btn.append(nav_buttons)
+            
+            # Add quick jump buttons for large result sets
+            if total_pages > 5:
+                jump_buttons = []
+                if current_page > 3:
+                    jump_buttons.append(
+                        InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0")
+                    )
+                if current_page < total_pages - 2:
+                    last_offset = (total_pages - 1) * items_per_page
+                    jump_buttons.append(
+                        InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{last_offset}")
+                    )
+                if jump_buttons:
+                    btn.append(jump_buttons)
         
-        for key in expired_keys:
-            del USER_RATE_LIMIT[key]
+        # Add search info and refresh button
+        info_buttons = [
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"next_{req}_{key}_{offset}"),
+            InlineKeyboardButton("🔍 New Search", callback_data="start_search")
+        ]
+        btn.append(info_buttons)
         
-        # Clean up old analytics data (keep last 30 days)
-        cutoff_time = current_time - timedelta(days=30)
-        for user_id, analytics in PAGINATION_ANALYTICS.items():
-            if analytics['last_access'] and analytics['last_access'] < cutoff_time:
-                expired_keys.append(user_id)
-        
-        LOGGER.info(f"Cleaned up {len(expired_keys)} expired data entries")
-        
-    except Exception as e:
-        LOGGER.error(f"Cleanup task failed: {e}")
-
-# Initialize background tasks
-async def initialize_background_tasks():
-    """Initialize background maintenance tasks"""
-    try:
-        # Schedule cleanup every hour
-        while True:
-            await asyncio.sleep(3600)  # 1 hour
-            await cleanup_expired_data()
-    except Exception as e:
-        LOGGER.error(f"Background task initialization failed: {e}")
-
-# Performance monitoring
-class PerformanceMonitor:
-    """Monitor pagination performance"""
-    
-    @staticmethod
-    async def log_response_time(user_id, operation, duration):
-        """Log response times for performance analysis"""
-        try:
-            LOGGER.info(f"Performance: User {user_id}, Operation: {operation}, Duration: {duration:.2f}s")
-            # In production, this would go to a monitoring system
-        except Exception as e:
-            LOGGER.error(f"Performance logging failed: {e}")
-
-async def update_message(query, settings, files, keyboard, total, search, offset):
-    """Update message based on settings"""
-    try:
-        if settings.get('button', True):
-            # Only update keyboard for button mode
-            await query.edit_message_reply_markup(reply_markup=keyboard)
+        # Update message based on button setting
+        if show_buttons:
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(btn)
+                )
+            except MessageNotModified:
+                pass  # Message already up to date
         else:
-            # Update full message with caption for non-button mode
-            remaining_seconds = calculate_time_difference()
+            # Generate improved caption
+            curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+            time_difference = timedelta(
+                hours=curr_time.hour, 
+                minutes=curr_time.minute, 
+                seconds=curr_time.second + (curr_time.microsecond / 1000000)
+            )
+            remaining_seconds = f"{time_difference.total_seconds():.2f}"
+            
             cap = await get_cap(settings, remaining_seconds, files, query, total, search, offset)
             
-            await query.message.edit_text(
-                text=cap,
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-                parse_mode=enums.ParseMode.HTML
-            )
-    except MessageNotModified:
-        # Message content is the same, ignore this error
-        pass
+            # Add pagination info to caption
+            pagination_info = f"\n\n📄 Page {current_page} of {total_pages} • {total} total results"
+            cap += pagination_info
+            
+            try:
+                await query.message.edit_text(
+                    text=cap,
+                    reply_markup=InlineKeyboardMarkup(btn),
+                    disable_web_page_preview=True,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except MessageNotModified:
+                pass  # Message content unchanged
+        
+        # Final confirmation (silent)
+        await query.answer()
+        
     except Exception as e:
-        LOGGER.error(f"Failed to update message: {e}")
-        raise
+        LOGGER.error(f"Error in next_page function: {e}")
+        try:
+            await query.answer("❌ Something went wrong. Please try again.", show_alert=True)
+        except:
+            pass  # Query might have expired
 
-# Additional utility functions for better error handling
 
-async def safe_get_settings(chat_id):
-    """Safely get chat settings with defaults"""
+# Additional helper function for page jumping
+@Client.on_callback_query(filters.regex(r"^jump"))
+async def jump_to_page(bot, query):
+    """Allow users to jump to a specific page"""
     try:
-        settings = await get_settings(chat_id)
-        # Ensure max_btn setting exists
-        if 'max_btn' not in settings:
-            await save_group_settings(chat_id, 'max_btn', True)
-            settings['max_btn'] = True
-        return settings
-    except Exception as e:
-        LOGGER.error(f"Failed to get settings for chat {chat_id}: {e}")
-        return {'button': True, 'max_btn': True}
-
-# Health check function
-async def validate_pagination_state(key, user_id):
-    """Validate that pagination state is healthy"""
-    try:
-        # Check if search query exists
+        ident, req, key = query.data.split("_")
+        
+        if int(req) not in [query.from_user.id, 0]:
+            return await query.answer("🚫 Access denied", show_alert=True)
+        
+        # Get total results to calculate max pages
         search = BUTTONS.get(key) or FRESH.get(key)
         if not search:
-            return False, "Search query expired"
+            return await query.answer("⏰ Search expired", show_alert=True)
         
-        # Check if user context exists
-        if user_id not in temp.SHORT:
-            return False, "User context missing"
+        _, _, total = await get_search_results(query.message.chat.id, search, offset=0, filter=True)
+        settings = await get_settings(query.message.chat.id)
+        items_per_page = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
+        total_pages = math.ceil(total / items_per_page)
         
-        return True, "OK"
+        # Create page selection buttons
+        page_buttons = []
+        for page in range(1, min(total_pages + 1, 11)):  # Show max 10 page buttons
+            offset = (page - 1) * items_per_page
+            page_buttons.append(
+                InlineKeyboardButton(str(page), callback_data=f"next_{req}_{key}_{offset}")
+            )
+        
+        # Arrange in rows of 5
+        btn_rows = [page_buttons[i:i+5] for i in range(0, len(page_buttons), 5)]
+        
+        # Add back button
+        btn_rows.append([
+            InlineKeyboardButton("🔙 Back to Results", callback_data=f"next_{req}_{key}_0")
+        ])
+        
+        await query.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(btn_rows)
+        )
+        await query.answer(f"Choose page (1-{total_pages})")
+        
     except Exception as e:
-        return False, f"State validation error: {e}"
+        LOGGER.error(f"Error in jump_to_page: {e}")
+        await query.answer("❌ Error loading page options", show_alert=True)
 		
 @Client.on_callback_query(filters.regex(r"^qualities#"))
 async def qualities_cb_handler(client: Client, query: CallbackQuery):

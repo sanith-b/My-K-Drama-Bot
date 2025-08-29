@@ -26,7 +26,10 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
-
+from .services.enhanced_filter import EnhancedAutoFilterService
+from .services.quality import QualityAnalyzer
+from .services.tmdb import AdvancedTMDBService
+# Add other missing imports
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"
@@ -2199,7 +2202,7 @@ async def enhanced_auto_filter(client, msg, spoll=False):
     except Exception as e:
         logger.error(f"Auto-delete error: {e}")
 
-async def enhanced_ai_spell_check(chat_id: int, wrong_name: str, tmdb_service: AdvancedTMDBService):
+async def enhanced_ai_spell_check(chat_id: int, wrong_name: str, tmdb_service):
     """Enhanced AI spell check with TMDB integration"""
     try:
         # Get TMDB movie suggestions
@@ -2242,7 +2245,7 @@ async def enhanced_ai_spell_check(chat_id: int, wrong_name: str, tmdb_service: A
         # Fallback to original method
         return await ai_spell_check(chat_id, wrong_name)
 
-async def enhanced_advantage_spell_check(client, message, tmdb_service: AdvancedTMDBService):
+async def enhanced_advantage_spell_check(client, message, tmdb_service):
     """Enhanced advantage spell check with rich TMDB data"""
     search = message.text
     chat_id = message.chat.id
@@ -2405,8 +2408,8 @@ async def handle_tmdb_selection_callback(client, callback_query):
                 show_alert=True
             )
         
-        # Get comprehensive movie data
-        tmdb_service = AdvancedTMDBService()
+        # Get comprehensive movie data - use your existing TMDB service
+        tmdb_service = EnhancedAutoFilterService().tmdb  # Use existing service
         movie_data = await tmdb_service.get_movie_comprehensive(tmdb_id)
         
         if not movie_data:
@@ -2414,7 +2417,6 @@ async def handle_tmdb_selection_callback(client, callback_query):
         
         # Format and search using movie title
         movie_title = movie_data.get('title', '')
-        formatted_data = await tmdb_service.format_comprehensive_movie_data(movie_data)
         
         # Create fake message object for recursive search
         fake_message = type('obj', (object,), {

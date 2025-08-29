@@ -1,61 +1,32 @@
-# pm_filter.py - Cleaned imports
 import asyncio
 import re
 import ast
 import math
 import random
 import pytz
+from datetime import datetime, timedelta, date, time
+lock = asyncio.Lock()
+from database.users_chats_db import db
+from database.refer import referdb
+from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
+from Script import script
+import pyrogram
+from info import *
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, WebAppInfo
+from pyrogram import Client, filters, enums
+from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid
+from utils import *
+from fuzzywuzzy import process
+from database.users_chats_db import db
+from database.ia_filterdb import Media, Media2, get_file_details, get_search_results, get_bad_files
+from logging_helper import LOGGER
+from urllib.parse import quote_plus
+from Lucia.util.file_properties import get_name, get_hash, get_media_file_size
+from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
-from datetime import datetime, timedelta, date, time
-from urllib.parse import quote_plus
-from fuzzywuzzy import process
 
-# Pyrogram imports
-from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, WebAppInfo
-from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
-
-# Local imports
-from Script import script
-from info import *
-from utils import *
-from logging_helper import LOGGER
-
-# Database imports
-from database.users_chats_db import db
-from database.refer import referdb
-from database.ia_filterdb import Media, Media2, get_file_details, get_search_results, get_bad_files
-from database.topdb import silentdb
-
-# File utilities
-from Lucia.util.file_properties import get_name, get_hash, get_media_file_size
-
-# Service imports - check if these files exist
-try:
-    from .services.enhanced_filter import EnhancedAutoFilterService
-except ImportError:
-    # Fallback if service doesn't exist
-    EnhancedAutoFilterService = None
-
-try:
-    from .services.quality import QualityAnalyzer
-except ImportError:
-    # Fallback if service doesn't exist
-    QualityAnalyzer = None
-
-try:
-    from .services.tmdb import AdvancedTMDBService
-except ImportError:
-    # Fallback if service doesn't exist
-    AdvancedTMDBService = None
-
-# Initialize lock
-lock = asyncio.Lock()
-
-# Your existing imports
-# Add any missing service imports based on your project structure# Add other missing imports
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"
@@ -1925,593 +1896,262 @@ async def cb_handler(client: Client, query: CallbackQuery):
     await query.answer(MSG_ALRT)
 
     
-async def enhanced_auto_filter(client, msg, spoll=False):
-    """Enhanced auto filter with advanced TMDB integration"""
+async def auto_filter(client, msg, spoll=False):
     curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-    
-    # Initialize services
-    filter_service = EnhancedAutoFilterService()
-    
     if not spoll:
         message = msg
-        
-        # Advanced message validation
-        is_valid, error_reason, extracted_year = await filter_service.validate_and_preprocess(message)
-        if not is_valid:
-            logger.debug(f"Message validation failed: {error_reason}")
+        if message.text.startswith("/"): return
+        if re.findall("((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
             return
-        
-        # Intelligent query processing
-        query_data = await filter_service.intelligent_query_processing(message.text)
-        search = query_data['cleaned']
-        
-        # Enhanced search indicator
-        search_msg = await message.reply_text(
-            f'<b>🔍 Enhanced Search Active...</b>\n'
-            f'<blockquote>🎬 Query: <code>{search}</code>\n'
-            f'{"🗓️ Year: " + str(extracted_year) if extracted_year else ""}\n'
-            f'🤖 AI-Powered Results</blockquote>',
-            reply_to_message_id=message.id
-        )
-        
-        # Super intelligent search with multiple strategies
-        files, offset, total_results, tmdb_data = await filter_service.super_intelligent_search(
-            message.chat.id, query_data
-        )
-        
-        settings = await get_settings(message.chat.id)
-        
-        # Enhanced spell check with TMDB suggestions
-        if not files:
-            if settings.get("spell_check", True):
-                ai_status = await search_msg.edit(
-                    '<b>🤖 Advanced AI Analysis...</b>\n'
-                    '<blockquote>🔍 Searching TMDB database\n'
-                    '📝 Analyzing spelling variants\n'
-                    '🎯 Finding best matches</blockquote>'
-                )
-                
-                # Enhanced spell check with TMDB integration
-                corrected_query = await enhanced_ai_spell_check(
-                    chat_id=message.chat.id, 
-                    wrong_name=search,
-                    tmdb_service=filter_service.tmdb
-                )
-                
-                if corrected_query:
-                    await ai_status.edit(
-                        f'<b>✨ AI Correction Found!</b>\n'
-                        f'<blockquote>📝 Original: <code>{search}</code>\n'
-                        f'🎯 Suggested: <code>{corrected_query}</code>\n'
-                        f'🔄 Searching again...</blockquote>'
-                    )
-                    await asyncio.sleep(2)
-                    
-                    # Recursive search with corrected query
-                    message.text = corrected_query
-                    await ai_status.delete()
-                    return await enhanced_auto_filter(client, message)
-                
-                await ai_status.delete()
-                return await enhanced_advantage_spell_check(client, message, filter_service.tmdb)
+        if len(message.text) < 100:
+            search = await replace_words(message.text)		
+            search = search.lower()
+            search = search.replace("-", " ")
+            search = search.replace(":","")
+            search = re.sub(r'\s+', ' ', search).strip()
+            m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query : <i>{search}...</i></b>', reply_to_message_id=message.id)
+            files, offset, total_results = await get_search_results(message.chat.id ,search, offset=0, filter=True)
+            settings = await get_settings(message.chat.id)
+            if not files:
+                if settings["spell_check"]:
+                    ai_sts = await m.edit('🤖 Hang tight… AI is checking your spelling!')
+                    is_misspelled = await ai_spell_check(chat_id = message.chat.id,wrong_name=search)
+                    if is_misspelled:
+                        await ai_sts.edit(f'<b>🔹 My pick<code> {is_misspelled}</code> \nOn the search for <code>{is_misspelled}</code></b>')
+                        await asyncio.sleep(2)
+                        message.text = is_misspelled
+                        await ai_sts.delete()
+                        return await auto_filter(client, message)
+                    await ai_sts.delete()
+                    return await advantage_spell_chok(client, message)
+        else:
+            return
     else:
-        # Handle spoll (poll) results
         message = msg.message.reply_to_message
         search, files, offset, total_results = spoll
-        tmdb_data = await filter_service.tmdb.get_enhanced_movie_data(search)
-        
-        search_msg = await message.reply_text(
-            f'<b>🔄 Processing Selection...</b>\n'
-            f'<blockquote>🎬 Query: <code>{search}</code>\n'
-            f'📊 Enhanced Results Loading</blockquote>',
-            reply_to_message_id=message.id
-        )
-        
+        m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query :<i>{search}...</i></b>', reply_to_message_id=message.id)
         settings = await get_settings(message.chat.id)
         await msg.message.delete()
-    
-    # Cache management
     key = f"{message.chat.id}-{message.id}"
     FRESH[key] = search
     temp.GETALL[key] = files
     temp.SHORT[message.from_user.id] = message.chat.id
-    
-    # Enhanced button generation with quality analysis
-    quality_analyzer = QualityAnalyzer()
-    
     if settings.get('button'):
-        # Analyze and rank files by quality
-        analyzed_files = []
-        for file in files:
-            quality_info = quality_analyzer.analyze_filename_quality(file.file_name)
-            analyzed_files.append((file, quality_info))
-        
-        # Sort by quality score (highest first)
-        analyzed_files.sort(key=lambda x: x[1]['quality_score'], reverse=True)
-        
-        btn = []
-        for file, quality_info in analyzed_files:
-            file_button = InlineKeyboardButton(
-                text=f"{quality_info['icon']} {silent_size(file.file_size)} | {quality_info['resolution']} | {clean_filename(file.file_name)}", 
-                callback_data=f'file#{file.file_id}'
-            )
-            btn.append([file_button])
-        
-        # Enhanced control buttons
-        btn.insert(0, [
-            InlineKeyboardButton("⭐ Quality Filter", callback_data=f"qualities#{key}#0"),
-            InlineKeyboardButton("🗓️ Seasons", callback_data=f"seasons#{key}#0"),
-            InlineKeyboardButton("🎭 Similar", callback_data=f"similar#{key}#0")
-        ])
-        
+        btn = [
+            [
+                InlineKeyboardButton(
+                    text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
+                ),
+            ]
+            for file in files
+        ]
+        btn.insert(0, 
+            [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+            ]
+        )
         btn.insert(1, [
-            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
-            InlineKeyboardButton("📊 Movie Info", callback_data=f"movieinfo#{key}")
+            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+            
         ])
     else:
         btn = []
-        btn.insert(0, [
-            InlineKeyboardButton("⭐ Quality Filter", callback_data=f"qualities#{key}#0"),
-            InlineKeyboardButton("🗓️ Seasons", callback_data=f"seasons#{key}#0"),
-            InlineKeyboardButton("🎭 Similar", callback_data=f"similar#{key}#0")
-        ])
-        
+        btn.insert(0, 
+            [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+            ]
+        )
         btn.insert(1, [
-            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
-            InlineKeyboardButton("📊 Movie Info", callback_data=f"movieinfo#{key}")
+            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+            
         ])
-    
-    # Enhanced pagination
     if offset != "":
         req = message.from_user.id if message.from_user else 0
-        max_files = settings.get('max_btn', 10)
-        total_pages = math.ceil(int(total_results) / max_files)
-        
-        btn.append([
-            InlineKeyboardButton("📄 Pages", callback_data="pages"),
-            InlineKeyboardButton(text=f"1/{total_pages}", callback_data="pages"),
-            InlineKeyboardButton(text="➡️ Next", callback_data=f"next_{req}_{key}_{offset}")
-        ])
+        try:
+            if settings['max_btn']:
+                btn.append(
+                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+                )
+            else:
+                btn.append(
+                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+                )
+        except KeyError:
+            await save_group_settings(message.chat.id, 'max_btn', True)
+            btn.append(
+                [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
+            )
     else:
-        btn.append([
-            InlineKeyboardButton(text="🎬 All Results Shown", callback_data="pages")
-        ])
-    
-    # Enhanced TMDB integration for rich content
-    enhanced_tmdb_data = tmdb_data if tmdb_data else await get_poster(search, file=files[0].file_name) if settings.get("imdb") else None
-    
-    # Calculate search performance
+        btn.append(
+            [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
+        )
+    imdb = await get_poster(search, file=(files[0]).file_name) if settings["imdb"] else None
     cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-    time_difference = timedelta(
-        hours=cur_time.hour, 
-        minutes=cur_time.minute, 
-        seconds=(cur_time.second + (cur_time.microsecond/1000000))
-    ) - timedelta(
-        hours=curr_time.hour, 
-        minutes=curr_time.minute, 
-        seconds=(curr_time.second + (curr_time.microsecond/1000000))
-    )
-    search_time = "{:.2f}".format(abs(time_difference.total_seconds()))
-    
-    # Enhanced caption generation
-    if enhanced_tmdb_data:
-        # Use TMDB template for rich movie information
-        TEMPLATE = script.ENHANCED_IMDB_TEMPLATE_TXT if hasattr(script, 'ENHANCED_IMDB_TEMPLATE_TXT') else script.IMDB_TEMPLATE_TXT
-        
+    time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
+    remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+    TEMPLATE = script.IMDB_TEMPLATE_TXT
+    if imdb:
         cap = TEMPLATE.format(
-            query=search,
-            title=enhanced_tmdb_data.get('title', 'Unknown'),
-            original_title=enhanced_tmdb_data.get('original_title', ''),
-            year=enhanced_tmdb_data.get('year', 'TBA'),
-            rating=enhanced_tmdb_data.get('rating', '0.0'),
-            votes=enhanced_tmdb_data.get('votes', '0'),
-            runtime=enhanced_tmdb_data.get('runtime', 'Unknown'),
-            genres=enhanced_tmdb_data.get('genres', 'Unknown'),
-            director=enhanced_tmdb_data.get('director', 'Unknown'),
-            cast=enhanced_tmdb_data.get('cast', 'Unknown'),
-            plot=enhanced_tmdb_data.get('overview', 'No plot available'),
-            countries=enhanced_tmdb_data.get('countries', 'Unknown'),
-            languages=enhanced_tmdb_data.get('languages', 'Unknown'),
-            budget=enhanced_tmdb_data.get('budget', 'Unknown'),
-            revenue=enhanced_tmdb_data.get('revenue', 'Unknown'),
-            poster=enhanced_tmdb_data.get('poster', ''),
-            tmdb_url=enhanced_tmdb_data.get('tmdb_url', ''),
-            imdb_url=enhanced_tmdb_data.get('imdb_url', ''),
-            trailer_url=enhanced_tmdb_data.get('trailer_url', ''),
-            total_results=total_results,
-            search_time=search_time,
+            qurey=search,
+            title=imdb['title'],
+            votes=imdb['votes'],
+            aka=imdb["aka"],
+            seasons=imdb["seasons"],
+            box_office=imdb['box_office'],
+            localized_title=imdb['localized_title'],
+            kind=imdb['kind'],
+            imdb_id=imdb["imdb_id"],
+            cast=imdb["cast"],
+            runtime=imdb["runtime"],
+            countries=imdb["countries"],
+            certificates=imdb["certificates"],
+            languages=imdb["languages"],
+            director=imdb["director"],
+            writer=imdb["writer"],
+            producer=imdb["producer"],
+            composer=imdb["composer"],
+            cinematographer=imdb["cinematographer"],
+            music_team=imdb["music_team"],
+            distributors=imdb["distributors"],
+            release_date=imdb['release_date'],
+            year=imdb['year'],
+            genres=imdb['genres'],
+            poster=imdb['poster'],
+            plot=imdb['plot'],
+            rating=imdb['rating'],
+            url=imdb['url'],
             **locals()
         )
-        
-        # Store enhanced caption
         temp.IMDB_CAP[message.from_user.id] = cap
-        
-        # Add file listing for non-button mode
         if not settings.get('button'):
-            cap += "\n\n<b>📁 Available Files:</b>\n"
             for file_num, file in enumerate(files, start=1):
-                quality_info = quality_analyzer.analyze_filename_quality(file.file_name)
-                cap += f"\n<b>{file_num}. {quality_info['icon']} <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {quality_info['resolution']} | {clean_filename(file.file_name)}</a></b>"
-    
+                cap += f"\n\n<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}</a></b>"
     else:
-        # Fallback caption without TMDB data
         if settings.get('button'):
-            cap = (f"<b>🎬 Enhanced Search Results</b>\n"
-                  f'<blockquote>👋 Hey, {message.from_user.mention}!\n'
-                  f'📂 Results for: <code>{search}</code>\n'
-                  f'📊 Found: {total_results} files\n'
-                  f'⚡ Search time: {search_time}s</blockquote>')
+            cap =f"<b><blockquote>Hey!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"
         else:
-            cap = (f"<b>🎬 Enhanced Search Results</b>\n"
-                  f'<blockquote>✨ Hello, {message.from_user.mention}!\n'
-                  f'📂 Results for: <code>{search}</code>\n'
-                  f'📊 Found: {total_results} files</blockquote>\n\n')
-            
-            # Add enhanced file listing
+            cap =f"<b><blockquote>✨ Hello!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"            
             for file_num, file in enumerate(files, start=1):
-                quality_info = quality_analyzer.analyze_filename_quality(file.file_name)
-                cap += f"<b>{file_num}. {quality_info['icon']} <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {quality_info['resolution']} | {clean_filename(file.file_name)}</a></b>\n\n"
-    
-    # Enhanced media posting with better error handling
-    if enhanced_tmdb_data and enhanced_tmdb_data.get('poster'):
+                cap += f"<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}\n\n</a></b>"                
+    if imdb and imdb.get('poster'):
         try:
-            # Try HD poster first
-            poster_url = enhanced_tmdb_data.get('poster_hd') or enhanced_tmdb_data.get('poster')
-            result_msg = await search_msg.edit_photo(
-                photo=poster_url, 
-                caption=cap, 
-                reply_markup=InlineKeyboardMarkup(btn), 
-                parse_mode=enums.ParseMode.HTML
-            )
-        except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
+            hehe = await m.edit_photo(photo=imdb.get('poster'), caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
             try:
-                # Fallback to standard poster
-                standard_poster = enhanced_tmdb_data.get('poster')
-                if standard_poster:
-                    # Try alternative poster format
-                    alt_poster = standard_poster.replace('.jpg', "._V1_UX360.jpg")
-                    result_msg = await search_msg.edit_photo(
-                        photo=alt_poster, 
-                        caption=cap, 
-                        reply_markup=InlineKeyboardMarkup(btn), 
-                        parse_mode=enums.ParseMode.HTML
-                    )
-                else:
-                    raise Exception("No poster available")
-            except Exception as e:
-                logger.warning(f"Poster fallback failed: {e}")
-                result_msg = await search_msg.edit_text(
-                    text=cap, 
-                    reply_markup=InlineKeyboardMarkup(btn), 
-                    parse_mode=enums.ParseMode.HTML,
-                    disable_web_page_preview=True
-                )
+                if settings['auto_delete']:
+                    await asyncio.sleep(DELETE_TIME)
+                    await hehe.delete()
+                    await message.delete()
+            except KeyError:
+                await save_group_settings(message.chat.id, 'auto_delete', True)
+                await asyncio.sleep(DELETE_TIME)
+                await hehe.delete()
+                await message.delete()
+        except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
+            pic = imdb.get('poster')
+            poster = pic.replace('.jpg', "._V1_UX360.jpg") 
+            hmm = await m.edit_photo(photo=poster, caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+            try:
+               if settings['auto_delete']:
+                    await asyncio.sleep(DELETE_TIME)
+                    await hmm.delete()
+                    await message.delete()
+            except KeyError:
+                await save_group_settings(message.chat.id, 'auto_delete', True)
+                await asyncio.sleep(DELETE_TIME)
+                await hmm.delete()
+                await message.delete()
         except Exception as e:
-            logger.error(f"Media posting error: {e}")
-            result_msg = await search_msg.edit_text(
-                text=cap, 
-                reply_markup=InlineKeyboardMarkup(btn), 
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            LOGGER.error(e)
+            fek = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+            try:
+                if settings['auto_delete']:
+                    await asyncio.sleep(DELETE_TIME)
+                    await fek.delete()
+                    await message.delete()
+            except KeyError:
+                await save_group_settings(message.chat.id, 'auto_delete', True)
+                await asyncio.sleep(DELETE_TIME)
+                await fek.delete()
+                await message.delete()
     else:
-        # No poster available - text only
-        result_msg = await search_msg.edit_text(
-            text=cap, 
-            reply_markup=InlineKeyboardMarkup(btn), 
-            disable_web_page_preview=True, 
-            parse_mode=enums.ParseMode.HTML
-        )
-    
-    # Enhanced auto-delete with user feedback
-    try:
-        if settings.get('auto_delete', True):
-            delete_time = settings.get('delete_timeout', DELETE_TIME)
-            
-            # Show countdown for long delete times
-            if delete_time > 60:
-                countdown_msg = await message.reply_text(
-                    f"⏰ Auto-delete in {delete_time//60}m {delete_time%60}s",
-                    reply_to_message_id=message.id
-                )
-                await asyncio.sleep(5)
-                await countdown_msg.delete()
-            
-            await asyncio.sleep(delete_time)
-            await result_msg.delete()
+        fuk = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+        try:
+            if settings['auto_delete']:
+                await asyncio.sleep(DELETE_TIME)
+                await fuk.delete()
+                await message.delete()
+        except KeyError:
+            await save_group_settings(message.chat.id, 'auto_delete', True)
+            await asyncio.sleep(DELETE_TIME)
+            await fuk.delete()
             await message.delete()
-    except KeyError:
-        await save_group_settings(message.chat.id, 'auto_delete', True)
-        await asyncio.sleep(DELETE_TIME)
-        await result_msg.delete()
-        await message.delete()
-    except Exception as e:
-        logger.error(f"Auto-delete error: {e}")
 
-async def enhanced_ai_spell_check(chat_id: int, wrong_name: str, tmdb_service):
-    """Enhanced AI spell check with TMDB integration"""
-    try:
-        # Get TMDB movie suggestions
-        suggestions = await tmdb_service.get_movie_suggestions(wrong_name, limit=10)
-        
-        if not suggestions:
-            # Fallback to original spell check method
-            return await ai_spell_check(chat_id, wrong_name)
-        
-        # Extract movie titles for fuzzy matching
-        movie_titles = [movie['title'] for movie in suggestions]
-        
-        # Find best matches using fuzzy logic
-        for attempt in range(3):  # Try top 3 matches
-            closest_match = process.extractOne(wrong_name, movie_titles)
-            
-            if not closest_match or closest_match[1] <= 75:
-                break
-            
-            candidate_movie = closest_match[0]
-            
-            # Test if files exist for this candidate
-            files, _, total = await get_search_results(
-                chat_id=chat_id, 
-                query=candidate_movie,
-                offset=0,
-                filter=True
-            )
-            
-            if files:
-                return candidate_movie
-            
-            # Remove tested title and try next best match
-            movie_titles.remove(candidate_movie)
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Enhanced spell check error: {e}")
-        # Fallback to original method
-        return await ai_spell_check(chat_id, wrong_name)
+async def ai_spell_check(chat_id, wrong_name):
+    async def search_movie(wrong_name):
+        search_results = imdb.search_movie(wrong_name)
+        movie_list = [movie['title'] for movie in search_results]
+        return movie_list
+    movie_list = await search_movie(wrong_name)
+    if not movie_list:
+        return
+    for _ in range(5):
+        closest_match = process.extractOne(wrong_name, movie_list)
+        if not closest_match or closest_match[1] <= 80:
+            return 
+        movie = closest_match[0]
+        files, offset, total_results = await get_search_results(chat_id=chat_id, query=movie)
+        if files:
+            return movie
+        movie_list.remove(movie)
 
-async def enhanced_advantage_spell_check(client, message, tmdb_service):
-    """Enhanced advantage spell check with rich TMDB data"""
+async def advantage_spell_chok(client, message):
+    mv_id = message.id
     search = message.text
     chat_id = message.chat.id
     settings = await get_settings(chat_id)
-    
-    # Clean query for TMDB search
     query = re.sub(
         r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
-        "", message.text, flags=re.IGNORECASE
-    )
-    query = query.strip()
-    
+        "", message.text, flags=re.IGNORECASE)
+    query = query.strip() + " movie"
     try:
-        # Get enhanced TMDB suggestions
-        suggestions = await tmdb_service.get_movie_suggestions(query, limit=8)
-        
-        if not suggestions:
-            # Fallback to original method
-            try:
-                movies = await get_poster(search, bulk=True)
-            except:
-                return await send_no_results_message(message, search)
-            
-            if not movies:
-                return await send_google_search_suggestion(message, search)
-            
-            # Original suggestion buttons
-            user = message.from_user.id if message.from_user else 0
-            buttons = [[
-                InlineKeyboardButton(
-                    text=movie.get('title'), 
-                    callback_data=f"spol#{movie.movieID}#{user}"
-                )
-            ] for movie in movies]
-        
-        else:
-            # Enhanced TMDB suggestion buttons
-            user = message.from_user.id if message.from_user else 0
-            buttons = []
-            
-            for movie in suggestions:
-                button_text = f"🎬 {movie['title']}"
-                if movie.get('year') and movie['year'] != 'TBA':
-                    button_text += f" ({movie['year']})"
-                if movie.get('rating') and float(movie['rating']) > 0:
-                    button_text += f" ⭐{movie['rating']}"
-                
-                buttons.append([
-                    InlineKeyboardButton(
-                        text=button_text,
-                        callback_data=f"tmdb_spol#{movie['id']}#{user}"
-                    )
-                ])
-        
-        # Add control buttons
-        buttons.append([
-            InlineKeyboardButton("🔍 Google Search", url=f"https://www.google.com/search?q={search.replace(' ', '+')}+movie"),
-            InlineKeyboardButton("❌ Close", callback_data='close_data')
-        ])
-        
-        # Enhanced "not found" message
-        no_results_text = (
-            f"<b>🔍 Enhanced Search Results</b>\n"
-            f'<blockquote>😔 No direct matches found for: <code>{search}</code>\n\n'
-            f'🤖 AI Suggestions based on TMDB:</blockquote>'
-        )
-        
-        suggestion_msg = await message.reply_text(
-            text=no_results_text,
-            reply_markup=InlineKeyboardMarkup(buttons),
-            reply_to_message_id=message.id
-        )
-        
-        # Auto cleanup
-        await asyncio.sleep(300)  # 5 minutes
+        movies = await get_poster(search, bulk=True)
+    except:
+        k = await message.reply(script.I_CUDNT.format(message.from_user.mention))
+        await asyncio.sleep(60)
+        await k.delete()
         try:
-            await suggestion_msg.delete()
             await message.delete()
         except:
             pass
-        
-    except Exception as e:
-        logger.error(f"Enhanced advantage spell check error: {e}")
-        return await send_error_message(message, search)
-
-async def send_no_results_message(message, search: str):
-    """Send enhanced no results message"""
-    k = await message.reply(
-        f"<b>🚫 No Results Found</b>\n"
-        f'<blockquote>😔 Sorry, no files found for: <code>{search}</code>\n'
-        f'🤖 AI search completed\n'
-        f'💡 Try different keywords or check spelling</blockquote>',
-        reply_to_message_id=message.id
+        return
+    if not movies:
+        google = search.replace(" ", "+")
+        button = [[
+            InlineKeyboardButton("💡 Spell Check? Google it! 🔎", url=f"https://www.google.com/search?q={google}")
+        ]]
+        k = await message.reply_text(text=script.I_CUDNT.format(search), reply_markup=InlineKeyboardMarkup(button))
+        await asyncio.sleep(60)
+        await k.delete()
+        try:
+            await message.delete()
+        except:
+            pass
+        return
+    user = message.from_user.id if message.from_user else 0
+    buttons = [[
+        InlineKeyboardButton(text=movie.get('title'), callback_data=f"spol#{movie.movieID}#{user}")
+    ]
+        for movie in movies
+    ]
+    buttons.append(
+        [InlineKeyboardButton(text="❌ Close", callback_data='close_data')]
     )
+    d = await message.reply_text(text=script.CUDNT_FND.format(message.from_user.mention), reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=message.id)
     await asyncio.sleep(60)
-    await k.delete()
+    await d.delete()
     try:
         await message.delete()
     except:
         pass
-
-async def send_google_search_suggestion(message, search: str):
-    """Send Google search suggestion"""
-    google_query = search.replace(" ", "+")
-    button = [[
-        InlineKeyboardButton(
-            "💡 Google Search 🔎", 
-            url=f"https://www.google.com/search?q={google_query}+movie"
-        ),
-        InlineKeyboardButton(
-            "🎭 TMDB Search", 
-            url=f"https://www.themoviedb.org/search?query={google_query}"
-        )
-    ]]
-    
-    k = await message.reply_text(
-        text=(f"<b>🔍 No Local Results</b>\n"
-              f'<blockquote>😔 No files found for: <code>{search}</code>\n'
-              f'🌐 Try external search options below:</blockquote>'),
-        reply_markup=InlineKeyboardMarkup(button),
-        reply_to_message_id=message.id
-    )
-    await asyncio.sleep(60)
-    await k.delete()
-    try:
-        await message.delete()
-    except:
-        pass
-
-async def send_error_message(message, search: str):
-    """Send error message for failed operations"""
-    k = await message.reply(
-        f"<b>⚠️ Search Error</b>\n"
-        f'<blockquote>🔧 Technical error occurred\n'
-        f'📝 Query: <code>{search}</code>\n'
-        f'🔄 Please try again later</blockquote>',
-        reply_to_message_id=message.id
-    )
-    await asyncio.sleep(60)
-    await k.delete()
-    try:
-        await message.delete()
-    except:
-        pass
-
-# Additional callback handler for TMDB-specific selections
-async def handle_tmdb_selection_callback(client, callback_query):
-    """Handle TMDB movie selection from suggestions"""
-    try:
-        data = callback_query.data.split('#')
-        if len(data) != 3 or data[0] != 'tmdb_spol':
-            return
-        
-        tmdb_id = int(data[1])
-        user_id = int(data[2])
-        
-        if callback_query.from_user.id != user_id:
-            return await callback_query.answer(
-                "⚠️ This search belongs to another user!", 
-                show_alert=True
-            )
-        
-        # Get comprehensive movie data - use your existing TMDB service
-        tmdb_service = EnhancedAutoFilterService().tmdb  # Use existing service
-        movie_data = await tmdb_service.get_movie_comprehensive(tmdb_id)
-        
-        if not movie_data:
-            return await callback_query.answer("❌ Movie data not found!", show_alert=True)
-        
-        # Format and search using movie title
-        movie_title = movie_data.get('title', '')
-        
-        # Create fake message object for recursive search
-        fake_message = type('obj', (object,), {
-            'text': movie_title,
-            'chat': callback_query.message.chat,
-            'from_user': callback_query.from_user,
-            'id': callback_query.message.id,
-            'reply_text': callback_query.message.reply_text
-        })
-        
-        # Delete suggestion message
-        await callback_query.message.delete()
-        
-        # Trigger enhanced auto filter with selected movie
-        await enhanced_auto_filter(client, fake_message)
-        
-    except Exception as e:
-        logger.error(f"TMDB selection callback error: {e}")
-        await callback_query.answer("❌ Selection failed!", show_alert=True)
-
-# Enhanced quality sorting callback
-async def handle_quality_filter_callback(client, callback_query):
-    """Handle quality filter selections"""
-    try:
-        data = callback_query.data.split('#')
-        if len(data) < 2 or data[0] != 'qualities':
-            return
-        
-        key = data[1]
-        page = int(data[2]) if len(data) > 2 else 0
-        
-        # Get files from cache
-        files = temp.GETALL.get(key, [])
-        if not files:
-            return await callback_query.answer("❌ Files not found in cache!", show_alert=True)
-        
-        # Analyze and group files by quality
-        quality_analyzer = QualityAnalyzer()
-        quality_groups = {}
-        
-        for file in files:
-            quality_info = quality_analyzer.analyze_filename_quality(file.file_name)
-            resolution = quality_info['resolution']
-            
-            if resolution not in quality_groups:
-                quality_groups[resolution] = []
-            quality_groups[resolution].append((file, quality_info))
-        
-        # Create quality filter buttons
-        quality_buttons = []
-        for resolution, file_group in sorted(quality_groups.items(), key=lambda x: len(x[1]), reverse=True):
-            count = len(file_group)
-            icon = file_group[0][1]['icon']
-            quality_buttons.append([
-                InlineKeyboardButton(
-                    text=f"{icon} {resolution} ({count} files)",
-                    callback_data=f"quality_show#{key}#{resolution}#{page}"
-                )
-            ])
-        
-        quality_buttons.append([
-            InlineKeyboardButton("🔙 Back to Results", callback_data=f"back_to_results#{key}"),
-            InlineKeyboardButton("❌ Close", callback_data="close_data")
-        ])
-        
-        await callback_query.message.edit_reply_markup(
-            reply_markup=InlineKeyboardMarkup(quality_buttons)
-        )
-        
-    except Exception as e:
-        logger.error(f"Quality filter callback error: {e}")
-        await callback_query.answer("❌ Quality filter failed!", show_alert=True)

@@ -28,6 +28,13 @@ import string
 import tracemalloc
 import random
 import logging
+import logging
+from urllib.parse import quote
+
+#
+REFERRAL_IMAGE_URL = "https://files.catbox.moe/nqvowv.jpg"
+SHARE_TEXT = "Hello! Experience a bot that offers a vast library of unlimited movies and series. 😃"
+#
 
 tracemalloc.start()
 
@@ -179,25 +186,151 @@ async def safe_reply(message, text, **kwargs):
         LOGGER.error(f"Failed to send reply: {e}")
         return None
 		
+async def get_user_refer_points(user_id):
+    """Get user referral points with error handling"""
+    try:
+        return await referdb.get_refer_points(user_id) if hasattr(referdb, 'get_refer_points') else referdb.get_refer_points(user_id)
+    except Exception as e:
+        LOGGER.error(f"Failed to get referral points for user {user_id}: {e}")
+        return 0
+
+def create_referral_link(bot_username, user_id):
+    """Create referral link for sharing"""
+    return f"https://t.me/{bot_username}?start=reff_{user_id}"
+
+def create_share_link(bot_username, user_id, share_text):
+    """Create Telegram share link with pre-filled text"""
+    encoded_text = quote(share_text)
+    referral_url = quote(create_referral_link(bot_username, user_id))
+    return f"https://telegram.me/share/url?url={referral_url}&text={encoded_text}"
+
+async def create_referral_keyboard(bot_username, user_id):
+    """Create inline keyboard for referral interface"""
+    try:
+        refer_points = await get_user_refer_points(user_id)
+        share_link = create_share_link(bot_username, user_id, SHARE_TEXT)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton('🔗 Invite Link', url=share_link),
+                InlineKeyboardButton(f'⏳ {refer_points}', callback_data='ref_point')
+            ],
+            [
+                InlineKeyboardButton('⬅️ Back', callback_data='premium')
+            ]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    except Exception as e:
+        LOGGER.error(f"Failed to create referral keyboard: {e}")
+        # Return basic keyboard on error
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton('⬅️ Back', callback_data='premium')]
+        ])
+
 @Client.on_callback_query(filters.regex(r"^reffff"))
 async def refercall(bot, query):
-    btn = [[
-        InlineKeyboardButton('🔗 Invite Link', url=f'https://telegram.me/share/url?url=https://t.me/{bot.me.username}?start=reff_{query.from_user.id}&text=Hello%21%20Experience%20a%20bot%20that%20offers%20a%20vast%20library%20of%20unlimited%20movies%20and%20series.%20%F0%9F%98%83'),
-        InlineKeyboardButton(f'⏳ {referdb.get_refer_points(query.from_user.id)}', callback_data='ref_point'),
-        InlineKeyboardButton('⬅️ Back', callback_data='premium')
-    ]]
-    reply_markup = InlineKeyboardMarkup(btn)
-    await bot.edit_message_media(
-            query.message.chat.id, 
-            query.message.id, 
-            InputMediaPhoto("https://files.catbox.moe/nqvowv.jpg")
+    """Handle referral callback queries"""
+    try:
+        user_id = query.from_user.id
+        bot_username = bot.me.username
+        
+        # Create referral link and keyboard
+        referral_link = create_referral_link(bot_username, user_id)
+        reply_markup = await create_referral_keyboard(bot_username, user_id)
+        
+        # Prepare message content
+        message_text = (
+            f"🎉 <b>Your Referral Link:</b>\n"
+            f"🔗 <code>{referral_link}</code>\n\n"
+            f"👥 <i>Share with friends to earn rewards!</i>"
         )
-    await query.message.edit_text(
-        text=f'🎉 Your Referral Link: \n🔗 https://t.me/{bot.me.username}?start=reff_{query.from_user.id} \n\n👥 Share with friends!',
-        reply_markup=reply_markup,
-        parse_mode=enums.ParseMode.HTML
+        
+        # Check if message has media to decide edit method
+        if query.message.photo or query.message.video or query.message.document:
+            # Edit media message
+            await edit_media_message(bot, query, message_text, reply_markup)
+        else:
+            # Edit text message
+            await edit_text_message(query, message_text, reply_markup)
+            
+        await query.answer("🎉 Referral link ready!")
+        
+    except Exception as e:
+        LOGGER.error(f"Error in refercall handler: {e}")
+        await query.answer("❌ Something went wrong. Please try again.", show_alert=True)
+
+async def edit_media_message(bot, query, text, reply_markup):
+    """Edit message with media content"""
+    try:
+        # First edit the media
+        await bot.edit_message_media(
+            chat_id=query.message.chat.id,
+            message_id=query.message.id,
+            media=InputMediaPhoto(
+                media=REFERRAL_IMAGE_URL,
+                caption=text,
+                parse_mode=enums.ParseMode.HTML
+            ),
+            reply_markup=reply_markup
         )
-    await query.answer()
+    except Exception as e:
+        LOGGER.error(f"Failed to edit media message: {e}")
+        # Fallback to editing caption only
+        try:
+            await query.message.edit_caption(
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception as fallback_error:
+            LOGGER.error(f"Fallback caption edit failed: {fallback_error}")
+            raise
+
+async def edit_text_message(query, text, reply_markup):
+    """Edit text-only message"""
+    try:
+        await query.message.edit_text(
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        LOGGER.error(f"Failed to edit text message: {e}")
+        raise
+
+# Additional callback handler for referral points display
+@Client.on_callback_query(filters.regex(r"^ref_point$"))
+async def show_referral_stats(bot, query):
+    """Show detailed referral statistics"""
+    try:
+        user_id = query.from_user.id
+        refer_points = await get_user_refer_points(user_id)
+        
+        stats_text = (
+            f"📊 <b>Your Referral Stats:</b>\n\n"
+            f"⏳ <b>Current Points:</b> {refer_points}\n"
+            f"🎯 <b>How to earn more:</b>\n"
+            f"• Share your referral link\n"
+            f"• Get friends to join using your link\n"
+            f"• Earn rewards for each successful referral!"
+        )
+        
+        await query.answer(stats_text, show_alert=True)
+        
+    except Exception as e:
+        LOGGER.error(f"Error showing referral stats: {e}")
+        await query.answer("❌ Unable to load stats", show_alert=True)
+
+# Utility function for referral tracking (bonus feature)
+async def track_referral_usage(user_id, action="view"):
+    """Track referral link usage for analytics"""
+    try:
+        # This would log to your analytics system
+        LOGGER.info(f"Referral {action} by user {user_id}")
+        # You could extend this to save to database for analytics
+    except Exception as e:
+        LOGGER.error(f"Failed to track referral {action}: {e}")
 
 
 @Client.on_callback_query(filters.regex(r"^next"))

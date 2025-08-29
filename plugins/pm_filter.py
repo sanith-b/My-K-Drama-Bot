@@ -26,6 +26,8 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
+import random
+import logging
 
 tracemalloc.start()
 
@@ -35,69 +37,148 @@ BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
 
+LOGGER = logging.getLogger(__name__)
+
+async def handle_emoji_reaction(message):
+    """Handle emoji reactions if enabled"""
+    if EMOJI_MODE:
+        try:
+            await message.react(emoji=random.choice(REACTIONS))
+        except Exception as e:
+            LOGGER.debug(f"Failed to react with emoji: {e}")
+
+async def check_maintenance_mode(client, message, user_id):
+    """Check if bot is in maintenance mode and handle accordingly"""
+    maintenance_mode = await db.get_maintenance_status(client.me.id)
+    if maintenance_mode and user_id not in ADMINS:
+        await message.reply_text(
+            "🚧 Currently upgrading… Will return soon 🔜", 
+            disable_web_page_preview=True
+        )
+        return True
+    return False
+
+async def has_links(text):
+    """Check if message contains links"""
+    return bool(re.search(r'https?://\S+|www\.\S+|t\.me/\S+', text))
 
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client, message):
-    bot_id = client.me.id
-    if EMOJI_MODE:
-        try:
-            await message.react(emoji=random.choice(REACTIONS))
-        except Exception:
-            pass
-    maintenance_mode = await db.get_maintenance_status(bot_id)
-    if maintenance_mode and message.from_user.id not in ADMINS:
-        await message.reply_text(f"🚧 Currently upgrading… Will return soon 🔜", disable_web_page_preview=True)
-        return
-    await silentdb.update_top_messages(message.from_user.id, message.text)
-    if message.chat.id != SUPPORT_CHAT_ID:
-        settings = await get_settings(message.chat.id)
-        if settings['auto_ffilter']:
-            if re.search(r'https?://\S+|www\.\S+|t\.me/\S+', message.text):
-                if await is_check_admin(client, message.chat.id, message.from_user.id):
-                    return
-                return await message.delete()   
-            await auto_filter(client, message)
-    else:
-        search = message.text
-        temp_files, temp_offset, total_results = await get_search_results(chat_id=message.chat.id, query=search.lower(), offset=0, filter=True)
-        if total_results == 0:
+    """Handle group messages with filtering functionality"""
+    try:
+        # Handle emoji reactions
+        await handle_emoji_reaction(message)
+        
+        # Check maintenance mode
+        if await check_maintenance_mode(client, message, message.from_user.id):
             return
+        
+        # Update message statistics
+        await silentdb.update_top_messages(message.from_user.id, message.text)
+        
+        # Handle support chat differently
+        if message.chat.id == SUPPORT_CHAT_ID:
+            await handle_support_chat_message(client, message)
         else:
-            return await message.reply_text(f"<b>✨ Hello {message.from_user.mention}! \n\n✅ Your request is already available. \n📂 Files found: {str(total_results)} \n🔍 Search: <code>{search}</code> \n‼️ This is a <u>support group</u>, so you can’t get files from here. \n\n📝 Search Hear 👇</b>",   
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Join & Explore 🔍", url=GRP_LNK)]]))
+            await handle_regular_group_message(client, message)
+            
+    except Exception as e:
+        LOGGER.error(f"Error in give_filter: {e}")
 
+async def handle_support_chat_message(client, message):
+    """Handle messages in support chat"""
+    search = message.text
+    temp_files, temp_offset, total_results = await get_search_results(
+        chat_id=message.chat.id, 
+        query=search.lower(), 
+        offset=0, 
+        filter=True
+    )
+    
+    if total_results > 0:
+        response_text = (
+            f"<b>✨ Hello {message.from_user.mention}!\n\n"
+            f"✅ Your request is already available.\n"
+            f"📂 Files found: {total_results}\n"
+            f"🔍 Search: <code>{search}</code>\n"
+            f"‼️ This is a <u>support group</u>, so you can't get files from here.\n\n"
+            f"📝 Search Here 👇</b>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Join & Explore 🔍", url=GRP_LNK)]
+        ])
+        await message.reply_text(response_text, reply_markup=keyboard)
+
+async def handle_regular_group_message(client, message):
+    """Handle messages in regular groups"""
+    settings = await get_settings(message.chat.id)
+    
+    if settings['auto_ffilter']:
+        # Check for links and delete if not from admin
+        if await has_links(message.text):
+            if not await is_check_admin(client, message.chat.id, message.from_user.id):
+                await message.delete()
+                return
+        
+        # Run auto filter
+        await auto_filter(client, message)
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
-async def pm_text(bot, message):
-    bot_id = bot.me.id
-    content = message.text
-    user = message.from_user.first_name
-    user_id = message.from_user.id
-    if EMOJI_MODE:
-        try:
-            await message.react(emoji=random.choice(REACTIONS))
-        except Exception:
-            pass
-    maintenance_mode = await db.get_maintenance_status(bot_id)
-    if maintenance_mode and message.from_user.id not in ADMINS:
-        await message.reply_text(f"🚧 Currently upgrading… Will return soon 🔜", disable_web_page_preview=True)
-        return
-    if content.startswith(("/", "#")):
-        return  
+async def pm_text(client, message):
+    """Handle private messages"""
     try:
+        user_id = message.from_user.id
+        content = message.text
+        
+        # Skip commands
+        if content.startswith(("/", "#")):
+            return
+        
+        # Handle emoji reactions
+        await handle_emoji_reaction(message)
+        
+        # Check maintenance mode
+        if await check_maintenance_mode(client, message, user_id):
+            return
+        
+        # Update message statistics
         await silentdb.update_top_messages(user_id, content)
-        pm_search = await db.pm_search_status(bot_id)
+        
+        # Handle PM search based on settings
+        pm_search = await db.pm_search_status(client.me.id)
+        
         if pm_search:
-            await auto_filter(bot, message)
+            await auto_filter(client, message)
         else:
-            await message.reply_text(
-             text=f"<b><i>⚠️ Not available here! Join & search below 👇</i></b>",   
-             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Start Search", url=GRP_LNK)]])
-            )
+            await send_redirect_message(message)
+            
     except Exception as e:
-        LOGGER.error(f"An error occurred: {str(e)}")
+        LOGGER.error(f"Error in pm_text: {e}")
 
+async def send_redirect_message(message):
+    """Send redirect message for PM users"""
+    response_text = "<b><i>⚠️ Not available here! Join & search below 👇</i></b>"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Start Search", url=GRP_LNK)]
+    ])
+    await message.reply_text(text=response_text, reply_markup=keyboard)
 
+# Additional utility functions for better error handling and logging
+async def safe_delete_message(message):
+    """Safely delete a message with error handling"""
+    try:
+        await message.delete()
+    except Exception as e:
+        LOGGER.warning(f"Failed to delete message: {e}")
+
+async def safe_reply(message, text, **kwargs):
+    """Safely reply to a message with error handling"""
+    try:
+        return await message.reply_text(text, **kwargs)
+    except Exception as e:
+        LOGGER.error(f"Failed to send reply: {e}")
+        return None
+		
 @Client.on_callback_query(filters.regex(r"^reffff"))
 async def refercall(bot, query):
     btn = [[

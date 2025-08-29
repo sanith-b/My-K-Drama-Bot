@@ -7,7 +7,7 @@ import asyncio
 import time
 import pytz
 from logging_helper import LOGGER
-from .pm_filter import auto_filter 
+from .pm_filter import enhanced_auto_filter 
 from Script import script
 from datetime import datetime
 from database.refer import referdb

@@ -14,7 +14,7 @@ import pyrogram
 from info import *
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, WebAppInfo
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, MessageNotModified
+from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid
 from utils import *
 from fuzzywuzzy import process
 from database.users_chats_db import db
@@ -26,48 +26,6 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
-import random
-import logging
-from urllib.parse import quote
-import json
-from collections import defaultdict
-from typing import List, Tuple, Optional
-#
-REFERRAL_IMAGE_URL = "https://files.catbox.moe/nqvowv.jpg"
-SHARE_TEXT = "Hello! Experience a bot that offers a vast library of unlimited movies and series. 😃"
-FEATURE_FLAGS = {
-    "smart_search": True,
-    "bookmarks": True, 
-    "search_history": True,
-    "auto_refresh": True,
-    "bulk_operations": True,
-    "advanced_filters": True,
-    "user_preferences": True,
-    "analytics": True
-}
-ENHANCED_QUALITIES = [
-    "4K", "2160p", "1080p", "720p", "480p", "360p",
-    "HDR", "BluRay", "WEBRip", "HDTV", "DVDRip", "CAM"
-]
-
-# Season patterns for better detection
-SEASON_PATTERNS = [
-    r"S(\d{1,2})", r"Season\s*(\d{1,2})", r"series\s*(\d{1,2})",
-    r"S(\d{1,2})E(\d{1,2})", r"(\d{1,2})x(\d{1,2})"
-]
-
-# File type categories
-FILE_CATEGORIES = {
-    "movies": ["movie", "film", "cinema"],
-    "tv_shows": ["episode", "series", "season", "tv"],
-    "documentaries": ["documentary", "docs", "national geographic"],
-    "anime": ["anime", "manga", "japanese"]
-}
-#
-user_sessions = defaultdict(dict)
-search_analytics = defaultdict(list)
-user_bookmarks = defaultdict(set)
-search_history = defaultdict(list)
 
 tracemalloc.start()
 
@@ -77,293 +35,88 @@ BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
 
-LOGGER = logging.getLogger(__name__)
-
-async def handle_emoji_reaction(message):
-    """Handle emoji reactions if enabled"""
-    if EMOJI_MODE:
-        try:
-            await message.react(emoji=random.choice(REACTIONS))
-        except Exception as e:
-            LOGGER.debug(f"Failed to react with emoji: {e}")
-
-async def check_maintenance_mode(client, message, user_id):
-    """Check if bot is in maintenance mode and handle accordingly"""
-    maintenance_mode = await db.get_maintenance_status(client.me.id)
-    if maintenance_mode and user_id not in ADMINS:
-        await message.reply_text(
-            "🚧 Currently upgrading… Will return soon 🔜", 
-            disable_web_page_preview=True
-        )
-        return True
-    return False
-
-async def has_links(text):
-    """Check if message contains links"""
-    return bool(re.search(r'https?://\S+|www\.\S+|t\.me/\S+', text))
 
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client, message):
-    """Handle group messages with filtering functionality"""
-    try:
-        # Handle emoji reactions
-        await handle_emoji_reaction(message)
-        
-        # Check maintenance mode
-        if await check_maintenance_mode(client, message, message.from_user.id):
+    bot_id = client.me.id
+    if EMOJI_MODE:
+        try:
+            await message.react(emoji=random.choice(REACTIONS))
+        except Exception:
+            pass
+    maintenance_mode = await db.get_maintenance_status(bot_id)
+    if maintenance_mode and message.from_user.id not in ADMINS:
+        await message.reply_text(f"🚧 Currently upgrading… Will return soon 🔜", disable_web_page_preview=True)
+        return
+    await silentdb.update_top_messages(message.from_user.id, message.text)
+    if message.chat.id != SUPPORT_CHAT_ID:
+        settings = await get_settings(message.chat.id)
+        if settings['auto_ffilter']:
+            if re.search(r'https?://\S+|www\.\S+|t\.me/\S+', message.text):
+                if await is_check_admin(client, message.chat.id, message.from_user.id):
+                    return
+                return await message.delete()   
+            await auto_filter(client, message)
+    else:
+        search = message.text
+        temp_files, temp_offset, total_results = await get_search_results(chat_id=message.chat.id, query=search.lower(), offset=0, filter=True)
+        if total_results == 0:
             return
-        
-        # Update message statistics
-        await silentdb.update_top_messages(message.from_user.id, message.text)
-        
-        # Handle support chat differently
-        if message.chat.id == SUPPORT_CHAT_ID:
-            await handle_support_chat_message(client, message)
         else:
-            await handle_regular_group_message(client, message)
-            
-    except Exception as e:
-        LOGGER.error(f"Error in give_filter: {e}")
+            return await message.reply_text(f"<b>✨ Hello {message.from_user.mention}! \n\n✅ Your request is already available. \n📂 Files found: {str(total_results)} \n🔍 Search: <code>{search}</code> \n‼️ This is a <u>support group</u>, so you can’t get files from here. \n\n📝 Search Hear 👇</b>",   
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Join & Explore 🔍", url=GRP_LNK)]]))
 
-async def handle_support_chat_message(client, message):
-    """Handle messages in support chat"""
-    search = message.text
-    temp_files, temp_offset, total_results = await get_search_results(
-        chat_id=message.chat.id, 
-        query=search.lower(), 
-        offset=0, 
-        filter=True
-    )
-    
-    if total_results > 0:
-        response_text = (
-            f"<b>✨ Hello {message.from_user.mention}!\n\n"
-            f"✅ Your request is already available.\n"
-            f"📂 Files found: {total_results}\n"
-            f"🔍 Search: <code>{search}</code>\n"
-            f"‼️ This is a <u>support group</u>, so you can't get files from here.\n\n"
-            f"📝 Search Here 👇</b>"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚡ Join & Explore 🔍", url=GRP_LNK)]
-        ])
-        await message.reply_text(response_text, reply_markup=keyboard)
-
-async def handle_regular_group_message(client, message):
-    """Handle messages in regular groups"""
-    settings = await get_settings(message.chat.id)
-    
-    if settings['auto_ffilter']:
-        # Check for links and delete if not from admin
-        if await has_links(message.text):
-            if not await is_check_admin(client, message.chat.id, message.from_user.id):
-                await message.delete()
-                return
-        
-        # Run auto filter
-        await auto_filter(client, message)
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
-async def pm_text(client, message):
-    """Handle private messages"""
+async def pm_text(bot, message):
+    bot_id = bot.me.id
+    content = message.text
+    user = message.from_user.first_name
+    user_id = message.from_user.id
+    if EMOJI_MODE:
+        try:
+            await message.react(emoji=random.choice(REACTIONS))
+        except Exception:
+            pass
+    maintenance_mode = await db.get_maintenance_status(bot_id)
+    if maintenance_mode and message.from_user.id not in ADMINS:
+        await message.reply_text(f"🚧 Currently upgrading… Will return soon 🔜", disable_web_page_preview=True)
+        return
+    if content.startswith(("/", "#")):
+        return  
     try:
-        user_id = message.from_user.id
-        content = message.text
-        
-        # Skip commands
-        if content.startswith(("/", "#")):
-            return
-        
-        # Handle emoji reactions
-        await handle_emoji_reaction(message)
-        
-        # Check maintenance mode
-        if await check_maintenance_mode(client, message, user_id):
-            return
-        
-        # Update message statistics
         await silentdb.update_top_messages(user_id, content)
-        
-        # Handle PM search based on settings
-        pm_search = await db.pm_search_status(client.me.id)
-        
+        pm_search = await db.pm_search_status(bot_id)
         if pm_search:
-            await auto_filter(client, message)
+            await auto_filter(bot, message)
         else:
-            await send_redirect_message(message)
-            
+            await message.reply_text(
+             text=f"<b><i>⚠️ Not available here! Join & search below 👇</i></b>",   
+             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Start Search", url=GRP_LNK)]])
+            )
     except Exception as e:
-        LOGGER.error(f"Error in pm_text: {e}")
+        LOGGER.error(f"An error occurred: {str(e)}")
 
-async def send_redirect_message(message):
-    """Send redirect message for PM users"""
-    response_text = "<b><i>⚠️ Not available here! Join & search below 👇</i></b>"
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Start Search", url=GRP_LNK)]
-    ])
-    await message.reply_text(text=response_text, reply_markup=keyboard)
-
-# Additional utility functions for better error handling and logging
-async def safe_delete_message(message):
-    """Safely delete a message with error handling"""
-    try:
-        await message.delete()
-    except Exception as e:
-        LOGGER.warning(f"Failed to delete message: {e}")
-
-async def safe_reply(message, text, **kwargs):
-    """Safely reply to a message with error handling"""
-    try:
-        return await message.reply_text(text, **kwargs)
-    except Exception as e:
-        LOGGER.error(f"Failed to send reply: {e}")
-        return None
-		
-async def get_user_refer_points(user_id):
-    """Get user referral points with error handling"""
-    try:
-        return await referdb.get_refer_points(user_id) if hasattr(referdb, 'get_refer_points') else referdb.get_refer_points(user_id)
-    except Exception as e:
-        LOGGER.error(f"Failed to get referral points for user {user_id}: {e}")
-        return 0
-
-def create_referral_link(bot_username, user_id):
-    """Create referral link for sharing"""
-    return f"https://t.me/{bot_username}?start=reff_{user_id}"
-
-def create_share_link(bot_username, user_id, share_text):
-    """Create Telegram share link with pre-filled text"""
-    encoded_text = quote(share_text)
-    referral_url = quote(create_referral_link(bot_username, user_id))
-    return f"https://telegram.me/share/url?url={referral_url}&text={encoded_text}"
-
-async def create_referral_keyboard(bot_username, user_id):
-    """Create inline keyboard for referral interface"""
-    try:
-        refer_points = await get_user_refer_points(user_id)
-        share_link = create_share_link(bot_username, user_id, SHARE_TEXT)
-        
-        keyboard = [
-            [
-                InlineKeyboardButton('🔗 Invite Link', url=share_link),
-                InlineKeyboardButton(f'⏳ {refer_points}', callback_data='ref_point')
-            ],
-            [
-                InlineKeyboardButton('⬅️ Back', callback_data='premium')
-            ]
-        ]
-        return InlineKeyboardMarkup(keyboard)
-    except Exception as e:
-        LOGGER.error(f"Failed to create referral keyboard: {e}")
-        # Return basic keyboard on error
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton('⬅️ Back', callback_data='premium')]
-        ])
 
 @Client.on_callback_query(filters.regex(r"^reffff"))
 async def refercall(bot, query):
-    """Handle referral callback queries"""
-    try:
-        user_id = query.from_user.id
-        bot_username = bot.me.username
-        
-        # Create referral link and keyboard
-        referral_link = create_referral_link(bot_username, user_id)
-        reply_markup = await create_referral_keyboard(bot_username, user_id)
-        
-        # Prepare message content
-        message_text = (
-            f"🎉 <b>Your Referral Link:</b>\n"
-            f"🔗 <code>{referral_link}</code>\n\n"
-            f"👥 <i>Share with friends to earn rewards!</i>"
+    btn = [[
+        InlineKeyboardButton('🔗 Invite Link', url=f'https://telegram.me/share/url?url=https://t.me/{bot.me.username}?start=reff_{query.from_user.id}&text=Hello%21%20Experience%20a%20bot%20that%20offers%20a%20vast%20library%20of%20unlimited%20movies%20and%20series.%20%F0%9F%98%83'),
+        InlineKeyboardButton(f'⏳ {referdb.get_refer_points(query.from_user.id)}', callback_data='ref_point'),
+        InlineKeyboardButton('⬅️ Back', callback_data='premium')
+    ]]
+    reply_markup = InlineKeyboardMarkup(btn)
+    await bot.edit_message_media(
+            query.message.chat.id, 
+            query.message.id, 
+            InputMediaPhoto("https://files.catbox.moe/nqvowv.jpg")
         )
-        
-        # Check if message has media to decide edit method
-        if query.message.photo or query.message.video or query.message.document:
-            # Edit media message
-            await edit_media_message(bot, query, message_text, reply_markup)
-        else:
-            # Edit text message
-            await edit_text_message(query, message_text, reply_markup)
-            
-        await query.answer("🎉 Referral link ready!")
-        
-    except Exception as e:
-        LOGGER.error(f"Error in refercall handler: {e}")
-        await query.answer("❌ Something went wrong. Please try again.", show_alert=True)
-
-async def edit_media_message(bot, query, text, reply_markup):
-    """Edit message with media content"""
-    try:
-        # First edit the media
-        await bot.edit_message_media(
-            chat_id=query.message.chat.id,
-            message_id=query.message.id,
-            media=InputMediaPhoto(
-                media=REFERRAL_IMAGE_URL,
-                caption=text,
-                parse_mode=enums.ParseMode.HTML
-            ),
-            reply_markup=reply_markup
+    await query.message.edit_text(
+        text=f'🎉 Your Referral Link: \n🔗 https://t.me/{bot.me.username}?start=reff_{query.from_user.id} \n\n👥 Share with friends!',
+        reply_markup=reply_markup,
+        parse_mode=enums.ParseMode.HTML
         )
-    except Exception as e:
-        LOGGER.error(f"Failed to edit media message: {e}")
-        # Fallback to editing caption only
-        try:
-            await query.message.edit_caption(
-                caption=text,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except Exception as fallback_error:
-            LOGGER.error(f"Fallback caption edit failed: {fallback_error}")
-            raise
-
-async def edit_text_message(query, text, reply_markup):
-    """Edit text-only message"""
-    try:
-        await query.message.edit_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=enums.ParseMode.HTML,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        LOGGER.error(f"Failed to edit text message: {e}")
-        raise
-
-# Additional callback handler for referral points display
-@Client.on_callback_query(filters.regex(r"^ref_point$"))
-async def show_referral_stats(bot, query):
-    """Show detailed referral statistics"""
-    try:
-        user_id = query.from_user.id
-        refer_points = await get_user_refer_points(user_id)
-        
-        stats_text = (
-            f"📊 <b>Your Referral Stats:</b>\n\n"
-            f"⏳ <b>Current Points:</b> {refer_points}\n"
-            f"🎯 <b>How to earn more:</b>\n"
-            f"• Share your referral link\n"
-            f"• Get friends to join using your link\n"
-            f"• Earn rewards for each successful referral!"
-        )
-        
-        await query.answer(stats_text, show_alert=True)
-        
-    except Exception as e:
-        LOGGER.error(f"Error showing referral stats: {e}")
-        await query.answer("❌ Unable to load stats", show_alert=True)
-
-# Utility function for referral tracking (bonus feature)
-async def track_referral_usage(user_id, action="view"):
-    """Track referral link usage for analytics"""
-    try:
-        # This would log to your analytics system
-        LOGGER.info(f"Referral {action} by user {user_id}")
-        # You could extend this to save to database for analytics
-    except Exception as e:
-        LOGGER.error(f"Failed to track referral {action}: {e}")
+    await query.answer()
 
 
 @Client.on_callback_query(filters.regex(r"^next"))
@@ -371,117 +124,60 @@ async def next_page(bot, query):
     try:
         ident, req, key, offset = query.data.split("_")
         curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-        
-        # Feature 1: Rate limiting check
-        user_id = query.from_user.id
-        current_time = time.time()
-        if hasattr(temp, 'USER_LAST_REQUEST'):
-            if user_id in temp.USER_LAST_REQUEST:
-                if current_time - temp.USER_LAST_REQUEST[user_id] < 1:  # 1 second cooldown
-                    return await query.answer("⏰ Please wait a moment before navigating!", show_alert=True)
-        else:
-            temp.USER_LAST_REQUEST = {}
-        temp.USER_LAST_REQUEST[user_id] = current_time
-        
         if int(req) not in [query.from_user.id, 0]:
             return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-        
         try:
             offset = int(offset)
         except:
             offset = 0
-            
         if BUTTONS.get(key)!=None:
             search = BUTTONS.get(key)
         else:
             search = FRESH.get(key)
-            
         if not search:
             await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name),show_alert=True)
             return
-            
         files, n_offset, total = await get_search_results(query.message.chat.id, search, offset=offset, filter=True)
-        
         try:
             n_offset = int(n_offset)
         except:
             n_offset = 0
-            
         if not files:
             return
-            
         temp.GETALL[key] = files
         temp.SHORT[query.from_user.id] = query.message.chat.id
         settings = await get_settings(query.message.chat.id)
-        
-        # Feature 2: Sort options
-        sort_option = settings.get('sort', 'name')  # default sort by name
-        if sort_option == 'size':
-            files.sort(key=lambda x: x.file_size, reverse=True)
-        elif sort_option == 'date':
-            files.sort(key=lambda x: getattr(x, 'date', 0), reverse=True)
-        else:  # name
-            files.sort(key=lambda x: x.file_name.lower())
-        
         if settings.get('button'):
-            btn = []
-            
-            # Feature 3: Enhanced file buttons with emojis
-            for file in files:
-                file_ext = file.file_name.split('.')[-1].lower()
-                emoji = get_file_emoji(file_ext)
-                size_text = silent_size(file.file_size)
-                
-                # Feature 4: Truncate long filenames
-                display_name = clean_filename(file.file_name)
-                if len(display_name) > 35:
-                    display_name = display_name[:32] + "..."
-                
-                btn.append([
+            btn = [
+                [
                     InlineKeyboardButton(
-                        text=f"{emoji} {size_text} | {extract_tag(file.file_name)} {display_name}", 
-                        callback_data=f'file#{file.file_id}'
-                    )
-                ])
-            
-            # Feature 5: Enhanced action buttons
-            btn.insert(0, [
-                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0"),
-                InlineKeyboardButton("🔄 Sort", callback_data=f"sort#{key}#0")  # New sort button
-            ])
-            
+                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
+                    ),
+                ]
+                for file in files
+            ]
+            btn.insert(0, 
+                [ 
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
             btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
-                InlineKeyboardButton("📊 Stats", callback_data=f"stats#{key}")  # New stats button
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+           
             ])
-            
-            # Feature 6: Quick navigation for large result sets
-            if total > 50:
-                btn.insert(2, [
-                    InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0"),
-                    InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{((total-1)//10)*10}")
-                ])
         else:
             btn = []
-            btn.insert(0, [
-                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0"),
-                InlineKeyboardButton("🔄 Sort", callback_data=f"sort#{key}#0")
-            ])
+            btn.insert(0, 
+                [
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
             btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
-                InlineKeyboardButton("📊 Stats", callback_data=f"stats#{key}")
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}") 
+           
             ])
-            
-            # Quick navigation for non-button mode too
-            if total > 50:
-                btn.insert(2, [
-                    InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0"),
-                    InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{((total-1)//10)*10}")
-                ])
-        
-        # Existing pagination logic with enhancements
         try:
             if settings['max_btn']:
                 if 0 < offset <= 10:
@@ -490,27 +186,20 @@ async def next_page(bot, query):
                     off_set = None
                 else:
                     off_set = offset - 10
-                    
-                current_page = math.ceil(int(offset)/10)+1
-                total_pages = math.ceil(total/10)
-                
                 if n_offset == 0:
-                    btn.append([
-                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), 
-                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
-                    ])
+                    btn.append(
+                        [InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages")]
+                    )
                 elif off_set is None:
-                    btn.append([
-                        InlineKeyboardButton("📄 Page", callback_data="pages"), 
-                        InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"), 
-                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                    ])
+                    btn.append([InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"), InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")])
                 else:
-                    btn.append([
-                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
-                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
-                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                    ])
+                    btn.append(
+                        [
+                            InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
+                            InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"),
+                            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                        ],
+                    )
             else:
                 if 0 < offset <= int(MAX_B_TN):
                     off_set = 0
@@ -518,69 +207,47 @@ async def next_page(bot, query):
                     off_set = None
                 else:
                     off_set = offset - int(MAX_B_TN)
-                    
-                current_page = math.ceil(int(offset)/int(MAX_B_TN))+1
-                total_pages = math.ceil(total/int(MAX_B_TN))
-                
                 if n_offset == 0:
-                    btn.append([
-                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), 
-                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
-                    ])
+                    btn.append(
+                        [InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"{math.ceil(int(offset)/int(MAX_B_TN))+1} / {math.ceil(total/int(MAX_B_TN))}", callback_data="pages")]
+                    )
                 elif off_set is None:
-                    btn.append([
-                        InlineKeyboardButton("📄 Page", callback_data="pages"), 
-                        InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"), 
-                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                    ])
+                    btn.append([InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(f"{math.ceil(int(offset)/int(MAX_B_TN))+1} / {math.ceil(total/int(MAX_B_TN))}", callback_data="pages"), InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")])
                 else:
-                    btn.append([
-                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
-                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
-                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                    ])
+                    btn.append(
+                        [
+                            InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
+                            InlineKeyboardButton(f"{math.ceil(int(offset)/int(MAX_B_TN))+1} / {math.ceil(total/int(MAX_B_TN))}", callback_data="pages"),
+                            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                        ],
+                    )
         except KeyError:
             await save_group_settings(query.message.chat.id, 'max_btn', True)
-            # Default pagination logic here (same as above with max_btn=True)
             if 0 < offset <= 10:
                 off_set = 0
             elif offset == 0:
                 off_set = None
             else:
                 off_set = offset - 10
-                
-            current_page = math.ceil(int(offset)/10)+1
-            total_pages = math.ceil(total/10)
-            
             if n_offset == 0:
-                btn.append([
-                    InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), 
-                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
-                ])
+                btn.append(
+                    [InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages")]
+                )
             elif off_set is None:
-                btn.append([
-                    InlineKeyboardButton("📄 Page", callback_data="pages"), 
-                    InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"), 
-                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                ])
+                btn.append([InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"), InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")])
             else:
-                btn.append([
-                    InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
-                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
-                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                ])
-        
-        # Feature 7: Loading indicator
-        await query.answer("🔄 Loading...", show_alert=False)
-        
+                btn.append(
+                    [
+                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
+                        InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"),
+                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                    ],
+                )
         if not settings.get('button'):
             cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
             time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
             remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
-            
-            # Feature 8: Enhanced caption with more info
-            cap = await get_enhanced_cap(settings, remaining_seconds, files, query, total, search, offset, sort_option)
-            
+            cap = await get_cap(settings, remaining_seconds, files, query, total, search, offset)
             try:
                 await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
             except MessageNotModified:
@@ -592,446 +259,331 @@ async def next_page(bot, query):
                 )
             except MessageNotModified:
                 pass
-                
+        await query.answer()
     except Exception as e:
-        LOGGER.error(f"Error In Next Function - {e}")
-        await query.answer("❌ Something went wrong! Please try again.", show_alert=True)
-
-
-# Feature 2: Helper function for file emojis
-def get_file_emoji(file_ext):
-    """Return appropriate emoji for file type"""
-    emoji_map = {
-        'mp4': '🎬', 'avi': '🎬', 'mkv': '🎬', 'mov': '🎬', 'wmv': '🎬',
-        'mp3': '🎵', 'flac': '🎵', 'wav': '🎵', 'aac': '🎵',
-        'pdf': '📄', 'doc': '📄', 'docx': '📄', 'txt': '📄',
-        'zip': '📦', 'rar': '📦', '7z': '📦', 'tar': '📦',
-        'jpg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'jpeg': '🖼️',
-        'apk': '📱', 'exe': '💻', 'dmg': '💻'
-    }
-    return emoji_map.get(file_ext, '📁')
-
-
-# Feature 8: Enhanced caption function
-async def get_enhanced_cap(settings, remaining_seconds, files, query, total, search, offset, sort_option):
-    """Generate enhanced caption with additional information"""
-    cap = await get_cap(settings, remaining_seconds, files, query, total, search, offset)
-    
-    # Add sorting info
-    sort_text = {
-        'name': '📝 Name',
-        'size': '📊 Size', 
-        'date': '📅 Date'
-    }
-    
-    # Add additional stats
-    total_size = sum(file.file_size for file in files if hasattr(file, 'file_size'))
-    avg_size = total_size / len(files) if files else 0
-    
-    enhanced_info = f"\n\n📈 <b>Stats:</b>\n"
-    enhanced_info += f"🔍 Sorted by: {sort_text.get(sort_option, '📝 Name')}\n"
-    enhanced_info += f"📦 Total Size: {silent_size(total_size)}\n"
-    enhanced_info += f"📊 Avg Size: {silent_size(avg_size)}\n"
-    enhanced_info += f"⏱️ Response Time: {remaining_seconds}s"
-    
-    return cap + enhanced_info
+        LOGGER.error(f"Error In Next Funtion - {e}")
 
 @Client.on_callback_query(filters.regex(r"^qualities#"))
 async def qualities_cb_handler(client: Client, query: CallbackQuery):
-    """Handle quality selection callback"""
     try:
-        # Validate user permission
-        if not await handler.validate_user_permission(query):
-            return
-        
-        # Parse callback data
+        try:
+            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
+                return await query.answer(
+                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
+                    show_alert=True,
+                )
+        except:
+            pass
         _, key, offset = query.data.split("#")
+        search = FRESH.get(key)
         offset = int(offset)
-        
-        # Get search term and prepare for display
-        search = FRESH.get(key, "").replace(' ', '_')
-        
-        # Create quality buttons
-        buttons = handler.create_quality_buttons(QUALITIES, key, offset)
-        
-        # Update message with new buttons
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
-        
+        search = search.replace(' ', '_')
+        btn = []
+        for i in range(0, len(QUALITIES)-1, 2):
+            btn.append([
+                InlineKeyboardButton(
+                    text=QUALITIES[i].title(),
+                    callback_data=f"fq#{QUALITIES[i].lower()}#{key}#{offset}"
+                ),
+                InlineKeyboardButton(
+                    text=QUALITIES[i+1].title(),
+                    callback_data=f"fq#{QUALITIES[i+1].lower()}#{key}#{offset}"
+                ),
+            ])
+        btn.insert(
+            0,
+            [
+                InlineKeyboardButton(
+                    text="🎯 Select Quality", callback_data="ident"
+                )
+            ],
+        )
+        req = query.from_user.id
+        offset = 0
+        btn.append([InlineKeyboardButton(text="📂 Back to Files 📂", callback_data=f"fq#homepage#{key}#{offset}")])
+        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
     except Exception as e:
-        LOGGER.error(f"Error in quality callback handler: {e}")
-        await query.answer("An error occurred. Please try again.", show_alert=True)
+        LOGGER.error(f"Error In Quality Callback Handler - {e}")
 
 @Client.on_callback_query(filters.regex(r"^fq#"))
 async def filter_qualities_cb_handler(client: Client, query: CallbackQuery):
-    """Handle quality filter callback"""
     try:
-        # Validate user permission
-        if not await handler.validate_user_permission(query):
-            return
-        
-        # Parse callback data
         _, qual, key, offset = query.data.split("#")
         offset = int(offset)
-        curr_time = datetime.now(handler.timezone).time()
-        
-        # Process search term
-        search = FRESH.get(key, "")
-        search = handler.process_search_term(search, qual, homepage=(qual == "homepage"))
-        
-        # Update search cache
-        BUTTONS[key] = search
-        
-        # Get search results
-        chat_id = query.message.chat.id
-        files, n_offset, total_results = await get_search_results(
-            chat_id, search, offset=offset, filter=True
-        )
-        
-        if not files:
-            await query.answer("⚡ Sorry, nothing was found!", show_alert=True)
-            return
-        
-        # Cache results
-        temp.GETALL[key] = files
-        
-        # Get settings and create buttons
-        settings = await get_settings(query.message.chat.id)
+        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+        search = FRESH.get(key)
+        search = search.replace("_", " ")
+        baal = qual in search
+        if baal:
+            search = search.replace(qual, "")
+        else:
+            search = search
         req = query.from_user.id
-        buttons = handler.create_file_buttons(files, key, settings, total_results, req, n_offset)
-        
-        # Update message
+        chat_id = query.message.chat.id
+        message = query.message
+        try:
+            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
+                return await query.answer(
+                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
+                    show_alert=True,
+                )
+        except:
+            pass
+        if qual != "homepage":
+            search = f"{search} {qual}" 
+        BUTTONS[key] = search   
+        files, n_offset, total_results = await get_search_results(chat_id, search, offset=offset, filter=True)
+        if not files:
+            await query.answer("⚡ Sorry, nothing was found!", show_alert=1)
+            return
+        temp.GETALL[key] = files
+        settings = await get_settings(message.chat.id)
         if settings.get('button'):
+            btn = [
+                [
+                    InlineKeyboardButton(
+                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
+                    ),
+                ]
+                for file in files
+            ]
+            btn.insert(0, 
+                [ 
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+           
+            ])
+
+        else:
+            btn = []
+            btn.insert(0, 
+                [
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
+            btn.insert(1, [           
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+           
+            ])
+        if n_offset != "":
             try:
-                await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
+                if settings['max_btn']:
+                    btn.append(
+                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                    )
+    
+                else:
+                    btn.append(
+                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                    )
+            except KeyError:
+                await save_group_settings(query.message.chat.id, 'max_btn', True)
+                btn.append(
+                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                )
+        else:
+            n_offset = 0
+            btn.append(
+                [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
+            )               
+        if not settings.get('button'):
+            cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+            time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
+            remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+            cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
+            try:
+                await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True)
             except MessageNotModified:
                 pass
         else:
-            # Calculate time difference and get caption
-            remaining_seconds = handler.calculate_time_difference(curr_time)
-            cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
-            
             try:
-                await query.message.edit_text(
-                    text=cap,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    disable_web_page_preview=True
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(btn)
                 )
             except MessageNotModified:
                 pass
-        
         await query.answer()
-        
     except Exception as e:
-        LOGGER.error(f"Error in quality filter handler: {e}")
-        await query.answer("An error occurred. Please try again.", show_alert=True)
+        LOGGER.error(f"Error In Quality - {e}")
 
+        
 @Client.on_callback_query(filters.regex(r"^seasons#"))
 async def season_cb_handler(client: Client, query: CallbackQuery):
-    """Handle season selection callback"""
     try:
-        # Validate user permission
-        if not await handler.validate_user_permission(query):
-            return
-        
-        # Parse callback data
+        try:
+            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
+                return await query.answer(
+                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
+                    show_alert=True,
+                )
+        except:
+            pass
         _, key, offset = query.data.split("#")
+        search = FRESH.get(key)
+        search = search.replace(' ', '_')
         offset = int(offset)
-        
-        # Get search term and prepare for display
-        search = FRESH.get(key, "").replace(' ', '_')
-        
-        # Create season buttons
-        buttons = handler.create_season_buttons(SEASONS, key, offset)
-        
-        # Update message with new buttons
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
-        
+        btn = []
+        for i in range(0, len(SEASONS)-1, 2):
+            btn.append([
+                InlineKeyboardButton(
+                    text=SEASONS[i].title(),
+                    callback_data=f"fs#{SEASONS[i].lower()}#{key}#{offset}"
+                ),
+                InlineKeyboardButton(
+                    text=SEASONS[i+1].title(),
+                    callback_data=f"fs#{SEASONS[i+1].lower()}#{key}#{offset}"
+                ),
+            ])
+        btn.insert(
+            0,
+            [
+                InlineKeyboardButton(
+                    text="⇊ ꜱᴇʟᴇᴄᴛ Sᴇᴀsᴏɴ ⇊", callback_data="ident"
+                )
+            ],
+        )
+        req = query.from_user.id
+        offset = 0
+        btn.append([InlineKeyboardButton(text="📂 Back to Files 📂", callback_data=f"fl#homepage#{key}#{offset}")])
+        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
     except Exception as e:
-        LOGGER.error(f"Error in season callback handler: {e}")
-        await query.answer("An error occurred. Please try again.", show_alert=True)
+        LOGGER.error(f"Error In Season Cb Handaler - {e}")
+
 
 @Client.on_callback_query(filters.regex(r"^fs#"))
 async def filter_season_cb_handler(client: Client, query: CallbackQuery):
-    """Handle season filter callback"""
     try:
-        # Validate user permission
-        if not await handler.validate_user_permission(query):
-            return
-        
-        # Parse callback data
         _, seas, key, offset = query.data.split("#")
         offset = int(offset)
-        curr_time = datetime.now(handler.timezone).time()
-        
-        # Process search term
-        search = FRESH.get(key, "")
-        search = handler.process_search_term(search, seas, homepage=(seas == "homepage"))
-        
-        # Update search cache
-        BUTTONS[key] = search
-        
-        # Get search results
-        chat_id = query.message.chat.id
-        files, n_offset, total_results = await get_search_results(
-            chat_id, search, offset=offset, filter=True
-        )
-        
-        if not files:
-            await query.answer("⚡ Sorry, nothing was found!", show_alert=True)
-            return
-        
-        # Cache results
-        temp.GETALL[key] = files
-        
-        # Get settings and create buttons
-        settings = await get_settings(query.message.chat.id)
+        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+        search = FRESH.get(key)
+        search = search.replace("_", " ")
+        baal = seas in search
+        if baal:
+            search = search.replace(seas, "")
+        else:
+            search = search
         req = query.from_user.id
-        buttons = handler.create_file_buttons(files, key, settings, total_results, req, n_offset)
-        
-        # Update message
+        chat_id = query.message.chat.id
+        message = query.message
+        try:
+            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
+                return await query.answer(
+                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
+                    show_alert=True,
+                )
+        except:
+            pass
+        if seas != "homepage":
+            search = f"{search} {seas}"
+        BUTTONS[key] = search
+        files, n_offset, total_results = await get_search_results(chat_id, search, offset=offset, filter=True)
+        if not files:
+            await query.answer("⚡ Sorry, nothing was found!", show_alert=1)
+            return
+        temp.GETALL[key] = files
+        settings = await get_settings(message.chat.id)
         if settings.get('button'):
+            btn = [
+                [
+                    InlineKeyboardButton(
+                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
+                    ),
+                ]
+                for file in files
+            ]
+            btn.insert(0, 
+                [
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+
+            ])
+        else:
+            btn = []
+            btn.insert(0, 
+                [
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")            
+            ])
+        if n_offset != "":
             try:
-                await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
+                if settings['max_btn']:
+                    btn.append(
+                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                    )
+
+                else:
+                    btn.append(
+                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                    )
+            except KeyError:
+                await save_group_settings(query.message.chat.id, 'max_btn', True)
+                btn.append(
+                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                )
+        else:
+            n_offset = 0
+            btn.append(
+                [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
+            )    
+
+        if not settings.get('button'):
+            cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+            time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
+            remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+            cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
+            try:
+                await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
             except MessageNotModified:
                 pass
         else:
-            # Calculate time difference and get caption
-            remaining_seconds = handler.calculate_time_difference(curr_time)
-            cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
-            
             try:
-                await query.message.edit_text(
-                    text=cap,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    disable_web_page_preview=True,
-                    parse_mode=enums.ParseMode.HTML
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(btn)
                 )
             except MessageNotModified:
                 pass
-        
         await query.answer()
-        
     except Exception as e:
-        LOGGER.error(f"Error in season filter handler: {e}")
-        await query.answer("An error occurred. Please try again.", show_alert=True)
+        LOGGER.error(f"Error In Season - {e}")
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
-    try:
-        _, id, user = query.data.split('#')
-        
-        # Feature 1: Rate limiting for poll searches
-        user_id = query.from_user.id
-        current_time = time.time()
-        if not hasattr(temp, 'SPOLL_COOLDOWN'):
-            temp.SPOLL_COOLDOWN = {}
-        
-        if user_id in temp.SPOLL_COOLDOWN:
-            if current_time - temp.SPOLL_COOLDOWN[user_id] < 3:  # 3 second cooldown
-                return await query.answer("⏰ Please wait a moment before searching again!", show_alert=True)
-        temp.SPOLL_COOLDOWN[user_id] = current_time
-        
-        if int(user) != 0 and query.from_user.id != int(user):
-            return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-        
-        # Feature 2: Loading indicator with movie fetching
-        await query.answer("🎬 Fetching movie details...", show_alert=False)
-        
-        movies = await get_poster(id, id=True)
-        if not movies:
-            return await query.answer("❌ Movie details not found!", show_alert=True)
-        
-        movie = movies.get('title')
-        original_title = movie  # Store original for logging
-        
-        # Feature 3: Enhanced title cleaning with better regex
-        movie = re.sub(r"[:\-\.\(\)\[\]{}]", " ", movie)  # Remove more special characters
-        movie = re.sub(r"\b(19|20)\d{2}\b", "", movie)    # Remove years
-        movie = re.sub(r"\b(hindi|english|tamil|telugu|malayalam|kannada|bengali|punjabi|marathi|gujarati)\b", "", movie, flags=re.IGNORECASE)  # Remove language names
-        movie = re.sub(r"\b(dvdrip|brrip|webrip|hdtv|720p|1080p|480p|4k|hd|hdrip|cam|ts|tc)\b", "", movie, flags=re.IGNORECASE)  # Remove quality terms
-        movie = re.sub(r"\s+", " ", movie).strip()
-        
-        # Feature 4: Alternative search terms
-        search_terms = [
-            movie,  # Cleaned title
-            original_title,  # Original title as backup
-        ]
-        
-        # Add partial searches for longer titles
-        if len(movie.split()) > 3:
-            words = movie.split()
-            search_terms.append(" ".join(words[:3]))  # First 3 words
-            search_terms.append(" ".join(words[-3:]))  # Last 3 words
-        
-        await query.answer(script.TOP_ALRT_MSG)
-        
-        # Feature 5: Try multiple search attempts
-        files = None
-        successful_search = None
-        
-        for search_term in search_terms:
-            if len(search_term.strip()) < 2:  # Skip too short terms
-                continue
-                
-            files, offset, total_results = await get_search_results(
-                query.message.chat.id, 
-                search_term, 
-                offset=0, 
-                filter=True
-            )
-            
-            if files:
-                successful_search = search_term
-                break
-        
-        if files:
-            # Feature 6: Add search context to results
-            search_info = {
-                'original_title': original_title,
-                'search_term': successful_search,
-                'movie_id': id,
-                'poster_data': movies
-            }
-            
-            k = (successful_search, files, offset, total_results, search_info)
-            await auto_filter(bot, query, k)
-            
-            # Feature 7: Log successful searches for analytics
-            if hasattr(temp, 'SEARCH_ANALYTICS'):
-                temp.SEARCH_ANALYTICS[id] = {
-                    'title': original_title,
-                    'search_term': successful_search,
-                    'results_count': total_results,
-                    'timestamp': current_time,
-                    'user_id': user_id
-                }
-            
-        else:
-            # Enhanced no results handling
-            reqstr1 = query.from_user.id if query.from_user else 0
-            reqstr = await bot.get_users(reqstr1)
-            
-            # Feature 8: Enhanced no results message with movie info
-            movie_info = f"🎬 <b>{original_title}</b>\n"
-            if movies.get('year'):
-                movie_info += f"📅 Year: {movies.get('year')}\n"
-            if movies.get('genre'):
-                movie_info += f"🎭 Genre: {', '.join(movies.get('genre', [])[:3])}\n"  # Show first 3 genres
-            if movies.get('rating'):
-                movie_info += f"⭐ Rating: {movies.get('rating')}\n"
-            
-            no_results_msg = f"{movie_info}\n❌ Sorry, this movie is not available right now.\n\n🔍 <b>Search attempts:</b>\n"
-            for i, term in enumerate(search_terms[:3], 1):  # Show first 3 attempts
-                if term.strip():
-                    no_results_msg += f"{i}. '{term}'\n"
-            
-            if NO_RESULTS_MSG:
-                # Feature 9: Enhanced logging with movie details
-                log_msg = script.NORSLTS.format(reqstr.id, reqstr.mention, original_title)
-                log_msg += f"\n\n📊 <b>Search Details:</b>"
-                log_msg += f"\n🆔 Movie ID: {id}"
-                log_msg += f"\n🎬 Original Title: {original_title}"
-                log_msg += f"\n🔍 Cleaned Title: {movie}"
-                log_msg += f"\n📅 Search Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')}"
-                
-                await bot.send_message(chat_id=BIN_CHANNEL, text=log_msg)
-            
-            # Feature 10: Enhanced action buttons
-            action_buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔔 Request to Admin", url=OWNER_LNK)],
-                [InlineKeyboardButton("🔍 Try Manual Search", callback_data=f"manual_search#{id}#{user}")],
-                [InlineKeyboardButton("📝 Suggest Alternative", callback_data=f"suggest#{id}#{user}")]
-            ])
-            
-            k = await query.message.edit(
-                text=no_results_msg,
-                reply_markup=action_buttons,
-                parse_mode=enums.ParseMode.HTML
-            )
-            
-            # Feature 11: Auto-cleanup with longer delay for better UX
-            await asyncio.sleep(15)  # Increased from 10 to 15 seconds
-            try:
-                await k.delete()
-            except Exception:
-                pass  # Message might already be deleted
-                
-    except ValueError:
-        await query.answer("❌ Invalid request format!", show_alert=True)
-    except Exception as e:
-        LOGGER.error(f"Error in spoll handler - {e}")
-        await query.answer("❌ Something went wrong! Please try again later.", show_alert=True)
-
-
-# Feature 12: Helper function for manual search
-@Client.on_callback_query(filters.regex(r"^manual_search"))
-async def manual_search_handler(bot, query):
-    try:
-        _, movie_id, user = query.data.split('#')
-        
-        if int(user) != 0 and query.from_user.id != int(user):
-            return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-        
-        movies = await get_poster(movie_id, id=True)
-        title = movies.get('title', 'Unknown Movie')
-        
-        manual_search_msg = f"🔍 <b>Manual Search</b>\n\n"
-        manual_search_msg += f"🎬 Movie: <code>{title}</code>\n\n"
-        manual_search_msg += f"💡 <b>Tips for better results:</b>\n"
-        manual_search_msg += f"• Try searching with just the movie name\n"
-        manual_search_msg += f"• Remove year and language\n"
-        manual_search_msg += f"• Try alternative spellings\n"
-        manual_search_msg += f"• Search for actor/director names\n\n"
-        manual_search_msg += f"👆 Just type your search query in the chat!"
-        
-        back_button = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data=f"spol#{movie_id}#{user}")]
-        ])
-        
-        await query.message.edit(
-            text=manual_search_msg,
-            reply_markup=back_button,
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Error in manual search handler - {e}")
-        await query.answer("❌ Something went wrong!", show_alert=True)
-
-
-# Feature 13: Suggestion handler
-@Client.on_callback_query(filters.regex(r"^suggest"))
-async def suggest_handler(bot, query):
-    try:
-        _, movie_id, user = query.data.split('#')
-        
-        if int(user) != 0 and query.from_user.id != int(user):
-            return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-        
-        movies = await get_poster(movie_id, id=True)
-        title = movies.get('title', 'Unknown Movie')
-        
-        suggest_msg = f"📝 <b>Suggest Alternative</b>\n\n"
-        suggest_msg += f"🎬 Original: <code>{title}</code>\n\n"
-        suggest_msg += f"💡 You can suggest:\n"
-        suggest_msg += f"• Alternative movie titles\n"
-        suggest_msg += f"• Similar movies\n"
-        suggest_msg += f"• Different language versions\n\n"
-        suggest_msg += f"📩 Send your suggestion to: {OWNER_LNK}"
-        
-        back_button = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data=f"spol#{movie_id}#{user}")]
-        ])
-        
-        await query.message.edit(
-            text=suggest_msg,
-            reply_markup=back_button,
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Error in suggest handler - {e}")
-        await query.answer("❌ Something went wrong!", show_alert=True)
+    _, id, user = query.data.split('#')
+    if int(user) != 0 and query.from_user.id != int(user):
+        return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+    movies = await get_poster(id, id=True)
+    movie = movies.get('title')
+    movie = re.sub(r"[:-]", " ", movie)
+    movie = re.sub(r"\s+", " ", movie).strip()
+    await query.answer(script.TOP_ALRT_MSG)
+    files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
+    if files:
+        k = (movie, files, offset, total_results)
+        await auto_filter(bot, query, k)
+    else:
+        reqstr1 = query.from_user.id if query.from_user else 0
+        reqstr = await bot.get_users(reqstr1)
+        if NO_RESULTS_MSG:
+            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
+        contact_admin_button = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
+        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
+        await asyncio.sleep(10)
+        await k.delete()
                 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):

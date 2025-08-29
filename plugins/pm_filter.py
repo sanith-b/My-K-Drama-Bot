@@ -14,7 +14,7 @@ import pyrogram
 from info import *
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, WebAppInfo
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid
+from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, MessageNotModified
 from utils import *
 from fuzzywuzzy import process
 from database.users_chats_db import db
@@ -31,6 +31,7 @@ import logging
 from urllib.parse import quote
 import json
 from collections import defaultdict
+from typing import List, Tuple, Optional
 #
 REFERRAL_IMAGE_URL = "https://files.catbox.moe/nqvowv.jpg"
 SHARE_TEXT = "Hello! Experience a bot that offers a vast library of unlimited movies and series. 😃"
@@ -860,914 +861,378 @@ async def show_user_settings(bot, query):
     except Exception as e:
         await query.answer("❌ Settings failed to load", show_alert=True)
 		
-@Client.on_callback_query(filters.regex(r"^qualities#"))
-async def enhanced_qualities_handler(client: Client, query: CallbackQuery):
-    """Enhanced quality filter with more options and better UX"""
-    try:
-        # Permission check
+class CallbackHandlers:
+    """Centralized callback handlers for Telegram bot"""
+    
+    def __init__(self):
+        self.timezone = pytz.timezone('Asia/Kolkata')
+    
+    async def validate_user_permission(self, query: CallbackQuery) -> bool:
+        """Validate if user has permission to interact with the callback"""
         try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"🚫 {query.from_user.first_name}, this isn't your search request!",
-                    show_alert=True,
+            user_id = query.from_user.id
+            reply_to_user_id = query.message.reply_to_message.from_user.id
+            
+            if user_id not in [reply_to_user_id, 0]:
+                await query.answer(
+                    f"⚠️ Hello {query.from_user.first_name}!\n"
+                    f"❌ This isn't your movie request.\n"
+                    f"📝 Please send your own request.",
+                    show_alert=True
                 )
-        except:
+                return False
+        except (AttributeError, TypeError):
+            # Handle cases where reply_to_message might be None
             pass
+        return True
+    
+    def create_quality_buttons(self, qualities: List[str], key: str, offset: int) -> List[List[InlineKeyboardButton]]:
+        """Create quality selection buttons"""
+        buttons = []
         
-        await query.answer("🔄 Loading quality options...", show_alert=False)
-        
-        _, key, offset = query.data.split("#")
-        search = FRESH.get(key) or BUTTONS.get(key)
-        
-        if not search:
-            await query.answer("⏰ Search expired. Please start a new search.", show_alert=True)
-            return
-        
-        offset = int(offset)
-        user_id = query.from_user.id
-        
-        # Analyze current results to show relevant qualities
-        current_files = temp.GETALL.get(key, [])
-        available_qualities = extract_available_qualities(current_files)
-        
-        # Build enhanced quality buttons
-        btn = []
-        
-        # Header
-        btn.append([
-            InlineKeyboardButton("🎯 Select Video Quality", callback_data="ident")
+        # Add header button
+        buttons.append([
+            InlineKeyboardButton(text="🎯 Select Quality", callback_data="ident")
         ])
         
-        # Popular qualities first (based on available content)
-        popular_qualities = ["4K", "1080p", "720p", "480p"]
-        quality_row = []
-        
-        for qual in popular_qualities:
-            count = available_qualities.get(qual.lower(), 0)
-            display_text = f"{qual}" + (f" ({count})" if count > 0 else "")
-            emoji = "✨" if count > 0 else "⚫"
-            
-            quality_row.append(
+        # Add quality buttons in pairs
+        for i in range(0, len(qualities) - 1, 2):
+            row = [
                 InlineKeyboardButton(
-                    f"{emoji} {display_text}",
-                    callback_data=f"fq#{qual.lower()}#{key}#{offset}"
+                    text=qualities[i].title(),
+                    callback_data=f"fq#{qualities[i].lower()}#{key}#{offset}"
                 )
-            )
+            ]
             
-            if len(quality_row) == 2:
-                btn.append(quality_row)
-                quality_row = []
-        
-        if quality_row:  # Add remaining button if odd number
-            btn.append(quality_row)
-        
-        # Advanced quality options
-        btn.append([
-            InlineKeyboardButton("🔥 HDR/4K", callback_data=f"fq#hdr#{key}#{offset}"),
-            InlineKeyboardButton("💎 BluRay", callback_data=f"fq#bluray#{key}#{offset}")
-        ])
-        
-        btn.append([
-            InlineKeyboardButton("🌐 WEB-DL", callback_data=f"fq#webdl#{key}#{offset}"),
-            InlineKeyboardButton("📺 HDTV", callback_data=f"fq#hdtv#{key}#{offset}")
-        ])
-        
-        # Source quality filters
-        btn.append([
-            InlineKeyboardButton("🎬 All Qualities", callback_data=f"fq#all#{key}#{offset}"),
-            InlineKeyboardButton("🗑️ Clear Filters", callback_data=f"fq#homepage#{key}#{offset}")
-        ])
-        
-        # Smart suggestions based on search content
-        if "movie" in search.lower():
-            btn.append([
-                InlineKeyboardButton("🎭 Movie Quality Bundle", callback_data=f"bundle#movie#{key}#{offset}")
-            ])
-        elif any(term in search.lower() for term in ["series", "season", "episode"]):
-            btn.append([
-                InlineKeyboardButton("📺 TV Series Bundle", callback_data=f"bundle#tv#{key}#{offset}")
-            ])
-        
-        # Navigation
-        btn.append([
-            InlineKeyboardButton("📂 Back to Files", callback_data=f"fq#homepage#{key}#{offset}"),
-            InlineKeyboardButton("🔧 More Filters", callback_data=f"advanced_filters#{key}#{offset}")
-        ])
-        
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
-        
-    except Exception as e:
-        LOGGER.error(f"Error in enhanced qualities handler: {e}")
-        await query.answer("❌ Failed to load quality options", show_alert=True)
-
-
-@Client.on_callback_query(filters.regex(r"^seasons#"))
-async def enhanced_seasons_handler(client: Client, query: CallbackQuery):
-    """Enhanced season filter with episode detection"""
-    try:
-        # Permission check
-        try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"🚫 {query.from_user.first_name}, this isn't your search request!",
-                    show_alert=True,
-                )
-        except:
-            pass
-        
-        await query.answer("📺 Loading season options...", show_alert=False)
-        
-        _, key, offset = query.data.split("#")
-        search = FRESH.get(key) or BUTTONS.get(key)
-        
-        if not search:
-            await query.answer("⏰ Search expired. Please start a new search.", show_alert=True)
-            return
-        
-        offset = int(offset)
-        
-        # Analyze current results for available seasons
-        current_files = temp.GETALL.get(key, [])
-        available_seasons = extract_available_seasons(current_files)
-        
-        btn = []
-        
-        # Header
-        btn.append([
-            InlineKeyboardButton("🗓️ Select Season/Episode", callback_data="ident")
-        ])
-        
-        if available_seasons:
-            # Show detected seasons
-            season_buttons = []
-            for season in sorted(available_seasons.keys()):
-                count = available_seasons[season]
-                season_buttons.append(
+            # Add second button if available
+            if i + 1 < len(qualities):
+                row.append(
                     InlineKeyboardButton(
-                        f"📺 Season {season} ({count})",
-                        callback_data=f"fs#season{season}#{key}#{offset}"
+                        text=qualities[i + 1].title(),
+                        callback_data=f"fq#{qualities[i + 1].lower()}#{key}#{offset}"
                     )
                 )
-                
-                if len(season_buttons) == 2:
-                    btn.append(season_buttons)
-                    season_buttons = []
-            
-            if season_buttons:
-                btn.append(season_buttons)
-        else:
-            # Generic season options
-            for i in range(1, 11, 2):
-                btn.append([
-                    InlineKeyboardButton(f"S{i:02d}", callback_data=f"fs#s{i:02d}#{key}#{offset}"),
-                    InlineKeyboardButton(f"S{i+1:02d}", callback_data=f"fs#s{i+1:02d}#{key}#{offset}")
-                ])
+            buttons.append(row)
         
-        # Episode filtering options
-        btn.append([
-            InlineKeyboardButton("🎬 Complete Seasons", callback_data=f"fs#complete#{key}#{offset}"),
-            InlineKeyboardButton("📝 Single Episodes", callback_data=f"fs#episodes#{key}#{offset}")
+        # Add back button
+        buttons.append([
+            InlineKeyboardButton(
+                text="📂 Back to Files 📂",
+                callback_data=f"fq#homepage#{key}#{offset}"
+            )
         ])
         
-        # Special options
-        btn.append([
-            InlineKeyboardButton("🌟 Latest Season", callback_data=f"fs#latest#{key}#{offset}"),
-            InlineKeyboardButton("🎭 All Seasons", callback_data=f"fs#all#{key}#{offset}")
+        return buttons
+    
+    def create_season_buttons(self, seasons: List[str], key: str, offset: int) -> List[List[InlineKeyboardButton]]:
+        """Create season selection buttons"""
+        buttons = []
+        
+        # Add header button
+        buttons.append([
+            InlineKeyboardButton(text="⇊ ꜱᴇʟᴇᴄᴛ Sᴇᴀsᴏɴ ⇊", callback_data="ident")
         ])
         
-        # Navigation
-        btn.append([
-            InlineKeyboardButton("📂 Back to Files", callback_data=f"fs#homepage#{key}#{offset}"),
-            InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#{offset}")
-        ])
-        
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
-        
-    except Exception as e:
-        LOGGER.error(f"Error in seasons handler: {e}")
-        await query.answer("❌ Failed to load season options", show_alert=True)
-
-
-@Client.on_callback_query(filters.regex(r"^fq#"))
-async def enhanced_filter_quality_handler(client: Client, query: CallbackQuery):
-    """Enhanced quality filtering with smart search"""
-    try:
-        await query.answer("🔄 Applying quality filter...", show_alert=False)
-        
-        _, qual, key, offset = query.data.split("#")
-        offset = int(offset)
-        
-        # Permission check
-        try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"🚫 {query.from_user.first_name}, this isn't your search request!",
-                    show_alert=True,
+        # Add season buttons in pairs
+        for i in range(0, len(seasons) - 1, 2):
+            row = [
+                InlineKeyboardButton(
+                    text=seasons[i].title(),
+                    callback_data=f"fs#{seasons[i].lower()}#{key}#{offset}"
                 )
-        except:
-            pass
+            ]
+            
+            # Add second button if available
+            if i + 1 < len(seasons):
+                row.append(
+                    InlineKeyboardButton(
+                        text=seasons[i + 1].title(),
+                        callback_data=f"fs#{seasons[i + 1].lower()}#{key}#{offset}"
+                    )
+                )
+            buttons.append(row)
         
-        search = FRESH.get(key)
-        if not search:
-            await query.answer("⏰ Search expired", show_alert=True)
+        # Add back button
+        buttons.append([
+            InlineKeyboardButton(
+                text="📂 Back to Files 📂",
+                callback_data=f"fs#homepage#{key}#{offset}"
+            )
+        ])
+        
+        return buttons
+    
+    def create_file_buttons(self, files: List, key: str, settings: dict, 
+                          total_results: int, req: int, n_offset: str) -> List[List[InlineKeyboardButton]]:
+        """Create file listing buttons"""
+        buttons = []
+        
+        # Add control buttons
+        buttons.extend([
+            [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
+            ],
+            [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+            ]
+        ])
+        
+        # Add file buttons if button display is enabled
+        if settings.get('button'):
+            file_buttons = [
+                [
+                    InlineKeyboardButton(
+                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
+                        callback_data=f'file#{file.file_id}'
+                    )
+                ]
+                for file in files
+            ]
+            # Insert file buttons after control buttons
+            buttons[2:2] = file_buttons
+        
+        # Add pagination buttons
+        if n_offset:
+            try:
+                page_size = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
+                total_pages = math.ceil(int(total_results) / page_size)
+                
+                buttons.append([
+                    InlineKeyboardButton("📄 Page", callback_data="pages"),
+                    InlineKeyboardButton(text=f"1/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton(text="➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ])
+            except (KeyError, ValueError):
+                # Fallback to default pagination
+                total_pages = math.ceil(int(total_results) / 10)
+                buttons.append([
+                    InlineKeyboardButton("📄 Page", callback_data="pages"),
+                    InlineKeyboardButton(text=f"1/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton(text="➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(text="🚫 That's everything!", callback_data="pages")
+            ])
+        
+        return buttons
+    
+    def process_search_term(self, search_term: str, filter_value: str, homepage: bool = False) -> str:
+        """Process and modify search term based on filter"""
+        # Replace underscores with spaces for search
+        search_term = search_term.replace("_", " ")
+        
+        if homepage:
+            return search_term
+        
+        # Remove existing filter if present
+        if filter_value in search_term:
+            search_term = search_term.replace(filter_value, "").strip()
+        
+        # Add new filter
+        return f"{search_term} {filter_value}".strip()
+    
+    def calculate_time_difference(self, curr_time: datetime.time) -> str:
+        """Calculate time difference for display"""
+        now = datetime.now(self.timezone).time()
+        
+        curr_td = timedelta(
+            hours=curr_time.hour,
+            minutes=curr_time.minute,
+            seconds=curr_time.second + (curr_time.microsecond / 1000000)
+        )
+        
+        now_td = timedelta(
+            hours=now.hour,
+            minutes=now.minute,
+            seconds=now.second + (now.microsecond / 1000000)
+        )
+        
+        time_difference = now_td - curr_td
+        return f"{time_difference.total_seconds():.2f}"
+
+# Handler implementations
+handler = CallbackHandlers()
+
+@Client.on_callback_query(filters.regex(r"^qualities#"))
+async def qualities_cb_handler(client: Client, query: CallbackQuery):
+    """Handle quality selection callback"""
+    try:
+        # Validate user permission
+        if not await handler.validate_user_permission(query):
             return
         
-        original_search = search.replace("_", " ")
-        req = query.from_user.id
+        # Parse callback data
+        _, key, offset = query.data.split("#")
+        offset = int(offset)
+        
+        # Get search term and prepare for display
+        search = FRESH.get(key, "").replace(' ', '_')
+        
+        # Create quality buttons
+        buttons = handler.create_quality_buttons(QUALITIES, key, offset)
+        
+        # Update message with new buttons
+        await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
+        
+    except Exception as e:
+        LOGGER.error(f"Error in quality callback handler: {e}")
+        await query.answer("An error occurred. Please try again.", show_alert=True)
+
+@Client.on_callback_query(filters.regex(r"^fq#"))
+async def filter_qualities_cb_handler(client: Client, query: CallbackQuery):
+    """Handle quality filter callback"""
+    try:
+        # Validate user permission
+        if not await handler.validate_user_permission(query):
+            return
+        
+        # Parse callback data
+        _, qual, key, offset = query.data.split("#")
+        offset = int(offset)
+        curr_time = datetime.now(handler.timezone).time()
+        
+        # Process search term
+        search = FRESH.get(key, "")
+        search = handler.process_search_term(search, qual, homepage=(qual == "homepage"))
+        
+        # Update search cache
+        BUTTONS[key] = search
+        
+        # Get search results
         chat_id = query.message.chat.id
-        
-        # Smart quality filtering
-        if qual == "homepage":
-            # Reset to original search
-            filtered_search = original_search
-        elif qual == "all":
-            # Show all qualities
-            filtered_search = original_search
-        else:
-            # Apply quality filter with smart logic
-            filtered_search = apply_smart_quality_filter(original_search, qual)
-        
-        # Update search in cache
-        BUTTONS[key] = filtered_search.replace(" ", "_")
-        
-        # Get filtered results
         files, n_offset, total_results = await get_search_results(
-            chat_id, filtered_search, offset=offset, filter=True
+            chat_id, search, offset=offset, filter=True
         )
         
         if not files:
-            await query.answer(f"⚡ No {qual.upper()} results found! Try a different quality.", show_alert=True)
+            await query.answer("⚡ Sorry, nothing was found!", show_alert=True)
             return
         
         # Cache results
         temp.GETALL[key] = files
         
-        # Update user session with applied filter
-        if FEATURE_FLAGS.get("analytics", False):
-            user_sessions[req]['last_filter'] = qual
-            user_sessions[req]['filter_timestamp'] = datetime.now()
-        
-        # Build enhanced result buttons
-        btn = await build_enhanced_result_buttons(
-            files, key, req, offset, n_offset, total_results, qual, filtered_search
-        )
+        # Get settings and create buttons
+        settings = await get_settings(query.message.chat.id)
+        req = query.from_user.id
+        buttons = handler.create_file_buttons(files, key, settings, total_results, req, n_offset)
         
         # Update message
-        settings = await get_settings(chat_id)
-        await update_filtered_results(query, settings, btn, files, total_results, filtered_search, offset, qual)
-        
-        # Success feedback
-        quality_emoji = get_quality_emoji(qual)
-        await query.answer(f"{quality_emoji} Applied {qual.upper()} filter • {len(files)} results")
-        
-    except Exception as e:
-        LOGGER.error(f"Error in enhanced quality filter: {e}")
-        await query.answer("❌ Filter failed. Please try again.", show_alert=True)
-
-
-@Client.on_callback_query(filters.regex(r"^fs#"))
-async def enhanced_filter_season_handler(client: Client, query: CallbackQuery):
-    """Enhanced season filtering"""
-    try:
-        await query.answer("📺 Applying season filter...", show_alert=False)
-        
-        _, season_filter, key, offset = query.data.split("#")
-        offset = int(offset)
-        
-        # Permission check
-        try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"🚫 {query.from_user.first_name}, this isn't your search request!",
-                    show_alert=True,
-                )
-        except:
-            pass
-        
-        search = FRESH.get(key)
-        if not search:
-            await query.answer("⏰ Search expired", show_alert=True)
-            return
-        
-        original_search = search.replace("_", " ")
-        req = query.from_user.id
-        chat_id = query.message.chat.id
-        
-        # Apply season filter
-        if season_filter == "homepage":
-            filtered_search = original_search
-        else:
-            filtered_search = apply_smart_season_filter(original_search, season_filter)
-        
-        # Update search
-        BUTTONS[key] = filtered_search.replace(" ", "_")
-        
-        # Get results
-        files, n_offset, total_results = await get_search_results(
-            chat_id, filtered_search, offset=offset, filter=True
-        )
-        
-        if not files:
-            await query.answer(f"📺 No {season_filter} results found!", show_alert=True)
-            return
-        
-        temp.GETALL[key] = files
-        
-        # Build buttons
-        btn = await build_enhanced_result_buttons(
-            files, key, req, offset, n_offset, total_results, season_filter, filtered_search
-        )
-        
-        # Update message
-        settings = await get_settings(chat_id)
-        await update_filtered_results(query, settings, btn, files, total_results, filtered_search, offset, season_filter)
-        
-        await query.answer(f"📺 Applied {season_filter} filter • {len(files)} results")
-        
-    except Exception as e:
-        LOGGER.error(f"Error in season filter: {e}")
-        await query.answer("❌ Season filter failed", show_alert=True)
-
-
-@Client.on_callback_query(filters.regex(r"^advanced_filters#"))
-async def show_advanced_filters(client: Client, query: CallbackQuery):
-    """Show advanced filtering options"""
-    try:
-        _, key, offset = query.data.split("#")
-        
-        btn = []
-        
-        # Header
-        btn.append([
-            InlineKeyboardButton("🔧 Advanced Filters", callback_data="ident")
-        ])
-        
-        # Content type filters
-        btn.append([
-            InlineKeyboardButton("🎬 Movies Only", callback_data=f"af#movies#{key}#{offset}"),
-            InlineKeyboardButton("📺 TV Shows Only", callback_data=f"af#tv#{key}#{offset}")
-        ])
-        
-        btn.append([
-            InlineKeyboardButton("🎌 Anime", callback_data=f"af#anime#{key}#{offset}"),
-            InlineKeyboardButton("📚 Documentaries", callback_data=f"af#docs#{key}#{offset}")
-        ])
-        
-        # File size filters
-        btn.append([
-            InlineKeyboardButton("🗂️ Small (<1GB)", callback_data=f"af#small#{key}#{offset}"),
-            InlineKeyboardButton("📦 Large (>5GB)", callback_data=f"af#large#{key}#{offset}")
-        ])
-        
-        # Language filters
-        btn.append([
-            InlineKeyboardButton("🇺🇸 English", callback_data=f"af#english#{key}#{offset}"),
-            InlineKeyboardButton("🌐 Multi-Lang", callback_data=f"af#multilang#{key}#{offset}")
-        ])
-        
-        # Special filters
-        btn.append([
-            InlineKeyboardButton("⭐ High Rated", callback_data=f"af#rated#{key}#{offset}"),
-            InlineKeyboardButton("🆕 Recent", callback_data=f"af#recent#{key}#{offset}")
-        ])
-        
-        # Navigation
-        btn.append([
-            InlineKeyboardButton("🔙 Back", callback_data=f"qualities#{key}#{offset}"),
-            InlineKeyboardButton("🗑️ Clear All", callback_data=f"af#clear#{key}#{offset}")
-        ])
-        
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
-        await query.answer("🔧 Advanced filters loaded")
-        
-    except Exception as e:
-        LOGGER.error(f"Error in advanced filters: {e}")
-
-
-# Helper functions for enhanced filtering
-
-def extract_available_qualities(files):
-    """Extract available video qualities from file list"""
-    quality_count = Counter()
-    
-    for file in files:
-        filename = file.file_name.lower()
-        
-        # Check for various quality indicators
-        if '4k' in filename or '2160p' in filename:
-            quality_count['4k'] += 1
-        elif '1080p' in filename or 'fhd' in filename:
-            quality_count['1080p'] += 1
-        elif '720p' in filename or 'hd' in filename:
-            quality_count['720p'] += 1
-        elif '480p' in filename:
-            quality_count['480p'] += 1
-        elif '360p' in filename:
-            quality_count['360p'] += 1
-        
-        # Check for source types
-        if 'bluray' in filename:
-            quality_count['bluray'] += 1
-        if 'webdl' in filename or 'web-dl' in filename:
-            quality_count['webdl'] += 1
-        if 'hdr' in filename:
-            quality_count['hdr'] += 1
-    
-    return dict(quality_count)
-
-
-def extract_available_seasons(files):
-    """Extract available seasons from file list"""
-    season_count = Counter()
-    
-    for file in files:
-        filename = file.file_name.lower()
-        
-        # Look for season patterns
-        for pattern in SEASON_PATTERNS:
-            matches = re.findall(pattern, filename, re.IGNORECASE)
-            for match in matches:
-                if isinstance(match, tuple):
-                    season_num = match[0]
-                else:
-                    season_num = match
-                
-                if season_num.isdigit():
-                    season_count[int(season_num)] += 1
-    
-    return dict(season_count)
-
-
-def apply_smart_quality_filter(search, quality):
-    """Apply smart quality filtering logic"""
-    # Remove existing quality terms to avoid conflicts
-    quality_terms = ["4k", "2160p", "1080p", "720p", "480p", "360p", "hdr", "bluray", "webdl", "hdtv"]
-    
-    search_words = search.lower().split()
-    filtered_words = [word for word in search_words if not any(term in word for term in quality_terms)]
-    
-    base_search = " ".join(filtered_words)
-    
-    # Add the new quality term
-    if quality not in ["all", "homepage"]:
-        return f"{base_search} {quality}"
-    
-    return base_search
-
-
-def apply_smart_season_filter(search, season_filter):
-    """Apply smart season filtering logic"""
-    if season_filter == "all":
-        return search
-    elif season_filter.startswith("season"):
-        season_num = season_filter.replace("season", "")
-        return f"{search} S{season_num.zfill(2)}"
-    elif season_filter.startswith("s"):
-        return f"{search} {season_filter}"
-    elif season_filter == "complete":
-        return f"{search} complete season"
-    elif season_filter == "episodes":
-        return f"{search} episode"
-    elif season_filter == "latest":
-        return f"{search} latest season"
-    
-    return search
-
-
-def get_quality_emoji(quality):
-    """Get appropriate emoji for quality"""
-    quality_emojis = {
-        "4k": "🔥", "2160p": "🔥",
-        "1080p": "💎", "fhd": "💎",
-        "720p": "⭐", "hd": "⭐",
-        "480p": "📱", "360p": "📱",
-        "bluray": "💿", "hdr": "🌈",
-        "webdl": "🌐", "hdtv": "📺"
-    }
-    return quality_emojis.get(quality.lower(), "🎬")
-
-
-async def build_enhanced_result_buttons(files, key, req, offset, n_offset, total_results, filter_type, search):
-    """Build enhanced result buttons with filter context"""
-    btn = []
-    settings = await get_settings(temp.SHORT.get(req, 0))
-    
-    # Filter indicator row
-    filter_emoji = get_quality_emoji(filter_type)
-    btn.append([
-        InlineKeyboardButton(f"{filter_emoji} Filtered by: {filter_type.title()}", callback_data="ident")
-    ])
-    
-    # Main action buttons
-    btn.append([
-        InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-        InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
-    ])
-    
-    btn.append([
-        InlineKeyboardButton("🚀 Send All", callback_data=f"sendfiles#{key}"),
-        InlineKeyboardButton("🗑️ Clear Filter", callback_data=f"fq#homepage#{key}#{offset}")
-    ])
-    
-    # File buttons if enabled
-    if settings.get('button'):
-        for file in files:
-            size_text = silent_size(file.file_size)
-            tag_text = extract_tag(file.file_name)
-            name_text = clean_filename(file.file_name)
-            quality_indicator = get_quality_indicator(file.file_name)
-            
-            btn.append([
-                InlineKeyboardButton(
-                    f"{size_text} | {quality_indicator} {tag_text} {name_text}",
-                    callback_data=f'file#{file.file_id}'
-                )
-            ])
-    
-    # Enhanced pagination
-    if n_offset and int(n_offset) > offset:
-        items_per_page = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
-        current_page = (offset // items_per_page) + 1
-        total_pages = math.ceil(total_results / items_per_page)
-        
-        nav_row = [
-            InlineKeyboardButton("📄 Page", callback_data="pages"),
-            InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"),
-            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-        ]
-        btn.append(nav_row)
-    else:
-        btn.append([
-            InlineKeyboardButton("🚫 That's everything!", callback_data="pages")
-        ])
-    
-    return btn
-
-
-async def update_filtered_results(query, settings, btn, files, total_results, search, offset, filter_type):
-    """Update message with filtered results"""
-    if settings.get('button'):
-        try:
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(btn))
-        except MessageNotModified:
-            pass
-    else:
-        # Generate enhanced caption with filter info
-        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-        remaining_seconds = "0.00"
-        
-        cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
-        
-        # Add filter information
-        filter_emoji = get_quality_emoji(filter_type)
-        filter_info = f"\n\n{filter_emoji} <b>Filter Applied:</b> {filter_type.title()}"
-        filter_info += f"\n📊 Showing {len(files)} of {total_results} results"
-        
-        cap += filter_info
-        
-        try:
-            await query.message.edit_text(
-                text=cap,
-                reply_markup=InlineKeyboardMarkup(btn),
-                disable_web_page_preview=True,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except MessageNotModified:
-            pass
-
-
-@Client.on_callback_query(filters.regex(r"^af#"))
-async def advanced_filter_handler(client: Client, query: CallbackQuery):
-    """Handle advanced filter options"""
-    try:
-        _, filter_type, key, offset = query.data.split("#")
-        
-        # Apply advanced filters based on type
-        search = FRESH.get(key, "")
-        
-        filter_terms = {
-            "movies": "movie film",
-            "tv": "series season episode",
-            "anime": "anime",
-            "docs": "documentary",
-            "small": "-large",  # Negative filter for large files
-            "large": "bluray 4k",
-            "english": "english",
-            "multilang": "multi dual",
-            "rated": "imdb rated",
-            "recent": "2023 2024"
-        }
-        
-        if filter_type == "clear":
-            filtered_search = search.replace("_", " ")
-        else:
-            filtered_search = f"{search.replace('_', ' ')} {filter_terms.get(filter_type, '')}"
-        
-        # Redirect to quality filter handler for processing
-        new_callback_data = f"fq#{filter_type}#{key}#{offset}"
-        query.data = new_callback_data
-        
-        await enhanced_filter_quality_handler(client, query)
-        
-    except Exception as e:
-        LOGGER.error(f"Error in advanced filter: {e}")
-        await query.answer("❌ Advanced filter failed", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^languages#"))
-async def languages_cb_handler(client: Client, query: CallbackQuery):
-    try:
-        try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
-                    show_alert=True,
-                )
-        except:
-            pass
-        _, key, offset = query.data.split("#")
-        search = FRESH.get(key)
-        search = search.replace(' ', '_')
-        offset = int(offset)
-        btn = []
-        for i in range(0, len(LANGUAGES)-1, 2):
-            btn.append([
-                InlineKeyboardButton(
-                    text=LANGUAGES[i].title(),
-                    callback_data=f"fl#{LANGUAGES[i].lower()}#{key}#{offset}"
-                ),
-                InlineKeyboardButton(
-                    text=LANGUAGES[i+1].title(),
-                    callback_data=f"fl#{LANGUAGES[i+1].lower()}#{key}#{offset}"
-                ),
-            ])
-        btn.insert(
-            0,
-            [
-                InlineKeyboardButton(
-                    text="⇊ ꜱᴇʟᴇᴄᴛ ʟᴀɴɢᴜᴀɢᴇ ⇊", callback_data="ident"
-                )
-            ],
-        )
-        req = query.from_user.id
-        offset = 0
-        btn.append([InlineKeyboardButton(text="📂 Back to Files 📂", callback_data=f"fl#homepage#{key}#{offset}")])
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
-    except Exception as e:
-        LOGGER.error(f"Error In Language Cb Handaler - {e}")
-    
-
-@Client.on_callback_query(filters.regex(r"^fl#"))
-async def filter_languages_cb_handler(client: Client, query: CallbackQuery):
-    try:
-        _, lang, key, offset = query.data.split("#")
-        offset = int(offset)
-        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-        search = FRESH.get(key)
-        search = search.replace("_", " ")
-        baal = lang in search
-        if baal:
-            search = search.replace(lang, "")
-        else:
-            search = search
-        req = query.from_user.id
-        chat_id = query.message.chat.id
-        message = query.message
-        try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
-                    show_alert=True,
-                )
-        except:
-            pass
-        if lang != "homepage":
-            search = f"{search} {lang}"
-        BUTTONS[key] = search
-        files, n_offset, total_results = await get_search_results(chat_id, search, offset=offset, filter=True)
-        if not files:
-            await query.answer("⚡ Sorry, nothing was found!", show_alert=1)
-            return
-        temp.GETALL[key] = files
-        settings = await get_settings(message.chat.id)
         if settings.get('button'):
-            btn = [
-                [
-                    InlineKeyboardButton(
-                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
-                    ),
-                ]
-                for file in files
-            ]
-            btn.insert(0, 
-                [
-                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-                ]
-            )
-            btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-            
-            ])
-        else:
-            btn = []
-            btn.insert(0, 
-                [
-                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-                ]
-            )
-            btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")            
-            ])
-        if n_offset != "":
             try:
-                if settings['max_btn']:
-                    btn.append(
-                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
-                    )
-    
-                else:
-                    btn.append(
-                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
-                    )
-            except KeyError:
-                await save_group_settings(query.message.chat.id, 'max_btn', True)
-                btn.append(
-                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
-                )
+                await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
+            except MessageNotModified:
+                pass
         else:
-            n_offset = 0
-            btn.append(
-                [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
-            )    
-
-        if not settings.get('button'):
-            cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-            time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
-            remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+            # Calculate time difference and get caption
+            remaining_seconds = handler.calculate_time_difference(curr_time)
             cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
+            
             try:
-                await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
-            except MessageNotModified:
-                pass
-        else:
-            try:
-                await query.edit_message_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(btn)
+                await query.message.edit_text(
+                    text=cap,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    disable_web_page_preview=True
                 )
             except MessageNotModified:
                 pass
-        await query.answer()
-    except Exception as e:
-        LOGGER.error(f"Error In Language - {e}")
         
+        await query.answer()
+        
+    except Exception as e:
+        LOGGER.error(f"Error in quality filter handler: {e}")
+        await query.answer("An error occurred. Please try again.", show_alert=True)
+
 @Client.on_callback_query(filters.regex(r"^seasons#"))
 async def season_cb_handler(client: Client, query: CallbackQuery):
+    """Handle season selection callback"""
     try:
-        try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
-                    show_alert=True,
-                )
-        except:
-            pass
+        # Validate user permission
+        if not await handler.validate_user_permission(query):
+            return
+        
+        # Parse callback data
         _, key, offset = query.data.split("#")
-        search = FRESH.get(key)
-        search = search.replace(' ', '_')
         offset = int(offset)
-        btn = []
-        for i in range(0, len(SEASONS)-1, 2):
-            btn.append([
-                InlineKeyboardButton(
-                    text=SEASONS[i].title(),
-                    callback_data=f"fs#{SEASONS[i].lower()}#{key}#{offset}"
-                ),
-                InlineKeyboardButton(
-                    text=SEASONS[i+1].title(),
-                    callback_data=f"fs#{SEASONS[i+1].lower()}#{key}#{offset}"
-                ),
-            ])
-        btn.insert(
-            0,
-            [
-                InlineKeyboardButton(
-                    text="⇊ ꜱᴇʟᴇᴄᴛ Sᴇᴀsᴏɴ ⇊", callback_data="ident"
-                )
-            ],
-        )
-        req = query.from_user.id
-        offset = 0
-        btn.append([InlineKeyboardButton(text="📂 Back to Files 📂", callback_data=f"fl#homepage#{key}#{offset}")])
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
+        
+        # Get search term and prepare for display
+        search = FRESH.get(key, "").replace(' ', '_')
+        
+        # Create season buttons
+        buttons = handler.create_season_buttons(SEASONS, key, offset)
+        
+        # Update message with new buttons
+        await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
+        
     except Exception as e:
-        LOGGER.error(f"Error In Season Cb Handaler - {e}")
-
+        LOGGER.error(f"Error in season callback handler: {e}")
+        await query.answer("An error occurred. Please try again.", show_alert=True)
 
 @Client.on_callback_query(filters.regex(r"^fs#"))
 async def filter_season_cb_handler(client: Client, query: CallbackQuery):
+    """Handle season filter callback"""
     try:
+        # Validate user permission
+        if not await handler.validate_user_permission(query):
+            return
+        
+        # Parse callback data
         _, seas, key, offset = query.data.split("#")
         offset = int(offset)
-        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-        search = FRESH.get(key)
-        search = search.replace("_", " ")
-        baal = seas in search
-        if baal:
-            search = search.replace(seas, "")
-        else:
-            search = search
-        req = query.from_user.id
-        chat_id = query.message.chat.id
-        message = query.message
-        try:
-            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
-                return await query.answer(
-                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
-                    show_alert=True,
-                )
-        except:
-            pass
-        if seas != "homepage":
-            search = f"{search} {seas}"
+        curr_time = datetime.now(handler.timezone).time()
+        
+        # Process search term
+        search = FRESH.get(key, "")
+        search = handler.process_search_term(search, seas, homepage=(seas == "homepage"))
+        
+        # Update search cache
         BUTTONS[key] = search
-        files, n_offset, total_results = await get_search_results(chat_id, search, offset=offset, filter=True)
+        
+        # Get search results
+        chat_id = query.message.chat.id
+        files, n_offset, total_results = await get_search_results(
+            chat_id, search, offset=offset, filter=True
+        )
+        
         if not files:
-            await query.answer("⚡ Sorry, nothing was found!", show_alert=1)
+            await query.answer("⚡ Sorry, nothing was found!", show_alert=True)
             return
+        
+        # Cache results
         temp.GETALL[key] = files
-        settings = await get_settings(message.chat.id)
+        
+        # Get settings and create buttons
+        settings = await get_settings(query.message.chat.id)
+        req = query.from_user.id
+        buttons = handler.create_file_buttons(files, key, settings, total_results, req, n_offset)
+        
+        # Update message
         if settings.get('button'):
-            btn = [
-                [
-                    InlineKeyboardButton(
-                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
-                    ),
-                ]
-                for file in files
-            ]
-            btn.insert(0, 
-                [
-                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-                ]
-            )
-            btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-
-            ])
-        else:
-            btn = []
-            btn.insert(0, 
-                [
-                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-                ]
-            )
-            btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")            
-            ])
-        if n_offset != "":
             try:
-                if settings['max_btn']:
-                    btn.append(
-                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
-                    )
-
-                else:
-                    btn.append(
-                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
-                    )
-            except KeyError:
-                await save_group_settings(query.message.chat.id, 'max_btn', True)
-                btn.append(
-                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
-                )
+                await query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
+            except MessageNotModified:
+                pass
         else:
-            n_offset = 0
-            btn.append(
-                [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
-            )    
-
-        if not settings.get('button'):
-            cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-            time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
-            remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+            # Calculate time difference and get caption
+            remaining_seconds = handler.calculate_time_difference(curr_time)
             cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
+            
             try:
-                await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
-            except MessageNotModified:
-                pass
-        else:
-            try:
-                await query.edit_message_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(btn)
+                await query.message.edit_text(
+                    text=cap,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    disable_web_page_preview=True,
+                    parse_mode=enums.ParseMode.HTML
                 )
             except MessageNotModified:
                 pass
+        
         await query.answer()
+        
     except Exception as e:
-        LOGGER.error(f"Error In Season - {e}")
+        LOGGER.error(f"Error in season filter handler: {e}")
+        await query.answer("An error occurred. Please try again.", show_alert=True)
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):

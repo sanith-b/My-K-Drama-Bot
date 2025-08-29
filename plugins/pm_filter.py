@@ -368,692 +368,273 @@ async def track_referral_usage(user_id, action="view"):
 
 @Client.on_callback_query(filters.regex(r"^next"))
 async def next_page(bot, query):
-    """Advanced pagination handler with premium features"""
     try:
-        # Show enhanced loading indicator
-        await query.answer("🔄 Loading results...", show_alert=False)
-        
-        # Parse callback data with validation
-        try:
-            ident, req, key, offset = query.data.split("_")
-            offset = max(0, int(offset))
-            req = int(req)
-        except (ValueError, IndexError) as e:
-            await query.answer("❌ Invalid request data", show_alert=True)
-            return
-        
-        # Enhanced permission check with session validation
-        user_id = query.from_user.id
-        if req not in [user_id, 0]:
-            await query.answer(
-                f"🚫 {query.from_user.first_name}, only the search initiator can navigate",
-                show_alert=True
-            )
-            return
-        
-        # Get search data with smart caching
-        search = BUTTONS.get(key) or FRESH.get(key)
-        if not search:
-            # Try to recover from user's search history
-            if FEATURE_FLAGS["search_history"] and user_id in search_history:
-                recent_searches = search_history[user_id][-5:]  # Last 5 searches
-                if recent_searches:
-                    await query.answer("🕐 Search expired. Check recent searches below.", show_alert=True)
-                    await show_search_history(query, recent_searches)
-                    return
-            
-            await query.answer(
-                f"⏰ Search expired. Use /search to start new search.",
-                show_alert=True
-            )
-            return
-        
-        # Update user session
-        user_sessions[user_id].update({
-            'last_search': search,
-            'last_offset': offset,
-            'last_activity': datetime.now(),
-            'search_count': user_sessions[user_id].get('search_count', 0) + 1
-        })
-        
-        # Fetch results with smart retry
-        files, n_offset, total = await fetch_results_with_retry(
-            query.message.chat.id, search, offset
-        )
-        
-        if not files:
-            await query.answer("📭 No results found", show_alert=True)
-            return
-        
-        # Cache and analytics
-        temp.GETALL[key] = files
-        temp.SHORT[user_id] = query.message.chat.id
-        
-        # Record analytics
-        if FEATURE_FLAGS["analytics"]:
-            search_analytics[user_id].append({
-                'search': search,
-                'timestamp': datetime.now(),
-                'results_count': total,
-                'page': (offset // 10) + 1
-            })
-        
-        # Get enhanced settings
-        settings = await get_enhanced_settings(query.message.chat.id, user_id)
-        
-        # Build advanced button layout
-        btn = await build_advanced_buttons(
-            files, key, req, offset, n_offset, total, settings, user_id, search
-        )
-        
-        # Smart message update
-        await update_message_smart(query, btn, settings, files, total, search, offset, user_id)
-        
-        # Auto-refresh setup
-        if settings.get('auto_refresh', False):
-            asyncio.create_task(schedule_auto_refresh(query, key, req, offset, 300))  # 5 min
-        
-        await query.answer()
-        
-    except Exception as e:
-        LOGGER.error(f"Error in next_page function: {e}")
-        await handle_error_gracefully(query, e)
-
-
-async def fetch_results_with_retry(chat_id, search, offset, max_retries=3):
-    """Fetch results with smart retry logic"""
-    for attempt in range(max_retries):
-        try:
-            files, n_offset, total = await get_search_results(chat_id, search, offset=offset, filter=True)
-            return files, max(0, int(n_offset) if n_offset else 0), total
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise e
-            await asyncio.sleep(1 * (attempt + 1))  # Progressive delay
-
-
-async def get_enhanced_settings(chat_id, user_id):
-    """Get settings with user preferences overlay"""
-    base_settings = await get_settings(chat_id)
-    
-    if FEATURE_FLAGS["user_preferences"]:
-        user_prefs = user_sessions[user_id].get('preferences', {})
-        base_settings.update(user_prefs)
-    
-    # Set intelligent defaults
-    defaults = {
-        'button': True,
-        'max_btn': True,
-        'show_thumbnails': False,
-        'compact_view': False,
-        'smart_sort': True,
-        'show_analytics': False,
-        'auto_refresh': False,
-        'bookmark_enabled': True
-    }
-    
-    for key, value in defaults.items():
-        base_settings.setdefault(key, value)
-    
-    return base_settings
-
-
-async def build_advanced_buttons(files, key, req, offset, n_offset, total, settings, user_id, search):
-    """Build advanced button layout with all features"""
-    btn = []
-    
-    # Top action row - Enhanced filters
-    filter_row = [
-        InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-        InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
-    ]
-    
-    if FEATURE_FLAGS["advanced_filters"]:
-        filter_row.append(InlineKeyboardButton("🔧 More", callback_data=f"filters#{key}"))
-    
-    btn.append(filter_row)
-    
-    # Smart actions row
-    action_row = []
-    
-    # Bulk operations
-    if FEATURE_FLAGS["bulk_operations"]:
-        action_row.extend([
-            InlineKeyboardButton("📤 Send All", callback_data=f"sendfiles#{key}"),
-            InlineKeyboardButton("⬇️ Download All", callback_data=f"downloadall#{key}"),
-            InlineKeyboardButton("✅ Select Multiple", callback_data=f"multiselect#{key}")
-        ])
-    else:
-        action_row.append(InlineKeyboardButton("🚀 Send All", callback_data=f"sendfiles#{key}"))
-    
-    btn.append(action_row)
-    
-    # Bookmark and history row
-    if FEATURE_FLAGS["bookmarks"] or FEATURE_FLAGS["search_history"]:
-        utility_row = []
-        
-        if FEATURE_FLAGS["bookmarks"]:
-            bookmark_text = "💾 Save Search" if search not in user_bookmarks[user_id] else "💾 Saved ✓"
-            utility_row.append(InlineKeyboardButton(bookmark_text, callback_data=f"bookmark#{key}#{search}"))
-        
-        if FEATURE_FLAGS["search_history"]:
-            utility_row.append(InlineKeyboardButton("🕐 History", callback_data=f"history#{user_id}"))
-        
-        if FEATURE_FLAGS["smart_search"]:
-            utility_row.append(InlineKeyboardButton("🧠 Smart Search", callback_data=f"smartsearch#{key}"))
-        
-        btn.append(utility_row)
-    
-    # File buttons with enhancements
-    if settings.get('button'):
-        file_buttons = []
-        
-        for i, file in enumerate(files):
-            # Enhanced file display
-            size_text = silent_size(file.file_size)
-            tag_text = extract_tag(file.file_name)
-            name_text = clean_filename(file.file_name)
-            
-            # Add quality indicators
-            quality_indicator = get_quality_indicator(file.file_name)
-            
-            # Add bookmark status
-            bookmark_indicator = "⭐" if file.file_id in user_bookmarks[user_id] else ""
-            
-            button_text = f"{size_text} | {quality_indicator}{tag_text} {name_text} {bookmark_indicator}"
-            
-            if settings.get('compact_view'):
-                button_text = f"{size_text} | {name_text[:30]}..." if len(name_text) > 30 else button_text
-            
-            file_buttons.append([
-                InlineKeyboardButton(
-                    text=button_text,
-                    callback_data=f'file#{file.file_id}#{i}'  # Add index for multi-select
-                )
-            ])
-        
-        btn.extend(file_buttons)
-    
-    # Enhanced navigation
-    items_per_page = 10 if settings.get('max_btn') else int(MAX_B_TN)
-    current_page = (offset // items_per_page) + 1
-    total_pages = math.ceil(total / items_per_page)
-    
-    if total_pages > 1:
-        nav_buttons = await build_navigation_buttons(req, key, offset, n_offset, items_per_page, current_page, total_pages)
-        btn.extend(nav_buttons)
-    
-    # Bottom utility row
-    utility_bottom = [
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh#{req}#{key}#{offset}"),
-        InlineKeyboardButton("⚙️ Settings", callback_data=f"settings#{user_id}"),
-        InlineKeyboardButton("🔍 New Search", callback_data="start_search")
-    ]
-    
-    if FEATURE_FLAGS["analytics"] and settings.get('show_analytics'):
-        utility_bottom.insert(-1, InlineKeyboardButton("📊 Stats", callback_data=f"stats#{user_id}"))
-    
-    btn.append(utility_bottom)
-    
-    return btn
-
-
-async def build_navigation_buttons(req, key, offset, n_offset, items_per_page, current_page, total_pages):
-    """Build smart navigation buttons"""
-    nav_buttons = []
-    
-    # Calculate offsets
-    prev_offset = max(0, offset - items_per_page) if offset > 0 else None
-    next_offset = n_offset if n_offset > offset else None
-    
-    # Main navigation row
-    main_nav = []
-    
-    if prev_offset is not None:
-        main_nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"))
-    
-    # Smart page indicator
-    if total_pages <= 5:
-        main_nav.append(InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data=f"jump_{req}_{key}"))
-    else:
-        main_nav.append(InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data=f"jump_{req}_{key}"))
-    
-    if next_offset is not None:
-        main_nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{next_offset}"))
-    
-    nav_buttons.append(main_nav)
-    
-    # Quick jump row for large result sets
-    if total_pages > 5:
-        jump_row = []
-        
-        if current_page > 3:
-            jump_row.append(InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0"))
-        
-        # Smart page jumps
-        if current_page > 10:
-            jump_10_back = max(0, (current_page - 11) * items_per_page)
-            jump_row.append(InlineKeyboardButton("⏪ -10", callback_data=f"next_{req}_{key}_{jump_10_back}"))
-        
-        if current_page < total_pages - 10:
-            jump_10_forward = min((current_page + 9) * items_per_page, (total_pages - 1) * items_per_page)
-            jump_row.append(InlineKeyboardButton("⏩ +10", callback_data=f"next_{req}_{key}_{jump_10_forward}"))
-        
-        if current_page < total_pages - 2:
-            last_offset = (total_pages - 1) * items_per_page
-            jump_row.append(InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{last_offset}"))
-        
-        if jump_row:
-            nav_buttons.append(jump_row)
-    
-    return nav_buttons
-
-
-def get_quality_indicator(filename):
-    """Get quality indicator emoji based on filename"""
-    filename_lower = filename.lower()
-    if '4k' in filename_lower or '2160p' in filename_lower:
-        return "🔥"
-    elif '1080p' in filename_lower or 'fhd' in filename_lower:
-        return "💎"
-    elif '720p' in filename_lower or 'hd' in filename_lower:
-        return "⭐"
-    elif '480p' in filename_lower or 'sd' in filename_lower:
-        return "📱"
-    return "🎬"
-
-
-async def update_message_smart(query, btn, settings, files, total, search, offset, user_id):
-    """Smart message update with enhanced features"""
-    if settings.get('button'):
-        try:
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(btn))
-        except MessageNotModified:
-            pass
-    else:
-        # Enhanced caption with more info
+        ident, req, key, offset = query.data.split("_")
         curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-        remaining_seconds = "0.00"  # Simplified for now
         
-        cap = await get_cap(settings, remaining_seconds, files, query, total, search, offset)
-        
-        # Add enhanced info
-        items_per_page = 10 if settings.get('max_btn') else int(MAX_B_TN)
-        current_page = (offset // items_per_page) + 1
-        total_pages = math.ceil(total / items_per_page)
-        
-        # Add pagination and search info
-        enhanced_info = f"""
-        
-📊 <b>Search Results</b>
-🔍 Query: <code>{search}</code>
-📄 Page {current_page} of {total_pages} • {total} total results
-⏱️ Search ID: <code>{query.data.split('_')[2]}</code>"""
-        
-        # Add user stats if enabled
-        if FEATURE_FLAGS["analytics"] and settings.get('show_analytics'):
-            user_stats = user_sessions[user_id]
-            enhanced_info += f"""
-📈 Your searches today: {user_stats.get('search_count', 0)}"""
-        
-        cap += enhanced_info
-        
-        try:
-            await query.message.edit_text(
-                text=cap,
-                reply_markup=InlineKeyboardMarkup(btn),
-                disable_web_page_preview=True,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except MessageNotModified:
-            pass
-
-
-async def schedule_auto_refresh(query, key, req, offset, delay_seconds):
-    """Schedule automatic refresh of results"""
-    await asyncio.sleep(delay_seconds)
-    try:
-        # Check if search is still active
-        if key in BUTTONS or key in FRESH:
-            # Trigger refresh
-            refresh_data = f"refresh_{req}_{key}_{offset}"
-            # This would need to be handled by a separate callback handler
-    except:
-        pass  # Search probably expired
-
-
-async def handle_error_gracefully(query, error):
-    """Handle errors with helpful user feedback"""
-    error_messages = {
-        "TimeoutError": "⏰ Request timed out. Please try again.",
-        "ConnectionError": "🌐 Connection issue. Check your internet.",
-        "PermissionError": "🚫 Access denied. Contact admin.",
-        "KeyError": "🔑 Data not found. Search may have expired.",
-    }
-    
-    error_type = type(error).__name__
-    message = error_messages.get(error_type, "❌ Something went wrong. Please try again.")
-    
-    try:
-        await query.answer(message, show_alert=True)
-    except:
-        pass  # Query might have expired
-
-
-# Additional callback handlers for new features
-
-@Client.on_callback_query(filters.regex(r"^bookmark"))
-async def handle_bookmark(bot, query):
-    """Handle bookmark operations"""
-    try:
-        _, key, search = query.data.split("#", 2)
+        # Feature 1: Rate limiting check
         user_id = query.from_user.id
-        
-        if search in user_bookmarks[user_id]:
-            user_bookmarks[user_id].remove(search)
-            await query.answer("🗑️ Bookmark removed", show_alert=False)
+        current_time = time.time()
+        if hasattr(temp, 'USER_LAST_REQUEST'):
+            if user_id in temp.USER_LAST_REQUEST:
+                if current_time - temp.USER_LAST_REQUEST[user_id] < 1:  # 1 second cooldown
+                    return await query.answer("⏰ Please wait a moment before navigating!", show_alert=True)
         else:
-            user_bookmarks[user_id].add(search)
-            await query.answer("💾 Search bookmarked!", show_alert=False)
-            
-    except Exception as e:
-        await query.answer("❌ Bookmark failed", show_alert=True)
-
-
-@Client.on_callback_query(filters.regex(r"^multiselect"))
-async def handle_multiselect(bot, query):
-    """Handle multiple file selection"""
-    try:
-        _, key = query.data.split("#")
-        user_id = query.from_user.id
+            temp.USER_LAST_REQUEST = {}
+        temp.USER_LAST_REQUEST[user_id] = current_time
         
-        # Initialize selection mode
-        user_sessions[user_id]['selection_mode'] = True
-        user_sessions[user_id]['selected_files'] = set()
+        if int(req) not in [query.from_user.id, 0]:
+            return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
         
-        await query.answer("✅ Multi-select mode enabled. Tap files to select.", show_alert=True)
-        
-        # Update buttons to show selection state
-        # This would need additional logic to modify existing buttons
-        
-    except Exception as e:
-        await query.answer("❌ Multi-select failed", show_alert=True)
-
-
-@Client.on_callback_query(filters.regex(r"^stats"))
-async def show_user_stats(bot, query):
-    """Show user analytics and statistics"""
-    try:
-        user_id = int(query.data.split("#")[1])
-        
-        if user_id != query.from_user.id:
-            return await query.answer("🚫 Access denied", show_alert=True)
-        
-        stats = search_analytics.get(user_id, [])
-        session_data = user_sessions.get(user_id, {})
-        
-        stats_text = f"""
-📊 <b>Your Search Statistics</b>
-
-🔍 Total searches: {len(stats)}
-📊 Searches today: {session_data.get('search_count', 0)}
-⭐ Bookmarked searches: {len(user_bookmarks.get(user_id, set()))}
-📱 Last activity: {session_data.get('last_activity', 'Never').strftime('%H:%M') if isinstance(session_data.get('last_activity'), datetime) else 'Never'}
-
-<b>Recent searches:</b>
-{chr(10).join([f"• {s['search'][:30]}..." if len(s['search']) > 30 else f"• {s['search']}" for s in stats[-5:]])}
-"""
-        
-        await query.message.edit_text(
-            stats_text,
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Back", callback_data="close_stats")
-            ]])
-        )
-        
-    except Exception as e:
-        await query.answer("❌ Failed to load stats", show_alert=True)
-
-
-@Client.on_callback_query(filters.regex(r"^settings"))
-async def show_user_settings(bot, query):
-    """Show personalized settings panel"""
-    try:
-        user_id = int(query.data.split("#")[1])
-        
-        if user_id != query.from_user.id:
-            return await query.answer("🚫 Access denied", show_alert=True)
-        
-        current_settings = user_sessions[user_id].get('preferences', {})
-        
-        settings_buttons = [
-            [
-                InlineKeyboardButton(
-                    f"🔘 Compact View" if current_settings.get('compact_view') else f"⚪ Compact View",
-                    callback_data=f"toggle_setting#compact_view#{user_id}"
-                ),
-                InlineKeyboardButton(
-                    f"🔘 Auto Refresh" if current_settings.get('auto_refresh') else f"⚪ Auto Refresh",
-                    callback_data=f"toggle_setting#auto_refresh#{user_id}"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    f"🔘 Show Analytics" if current_settings.get('show_analytics') else f"⚪ Show Analytics",
-                    callback_data=f"toggle_setting#show_analytics#{user_id}"
-                ),
-                InlineKeyboardButton(
-                    f"🔘 Smart Sort" if current_settings.get('smart_sort') else f"⚪ Smart Sort",
-                    callback_data=f"toggle_setting#smart_sort#{user_id}"
-                )
-            ],
-            [InlineKeyboardButton("💾 Save Settings", callback_data=f"save_settings#{user_id}")],
-            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
-        ]
-        
-        await query.message.edit_text(
-            "⚙️ <b>Personal Settings</b>\n\nCustomize your search experience:",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(settings_buttons)
-        )
-        
-    except Exception as e:
-        await query.answer("❌ Settings failed to load", show_alert=True)
-		
-class CallbackHandlers:
-    """Centralized callback handlers for Telegram bot"""
-    
-    def __init__(self):
-        self.timezone = pytz.timezone('Asia/Kolkata')
-    
-    async def validate_user_permission(self, query: CallbackQuery) -> bool:
-        """Validate if user has permission to interact with the callback"""
         try:
-            user_id = query.from_user.id
-            reply_to_user_id = query.message.reply_to_message.from_user.id
+            offset = int(offset)
+        except:
+            offset = 0
             
-            if user_id not in [reply_to_user_id, 0]:
-                await query.answer(
-                    f"⚠️ Hello {query.from_user.first_name}!\n"
-                    f"❌ This isn't your movie request.\n"
-                    f"📝 Please send your own request.",
-                    show_alert=True
-                )
-                return False
-        except (AttributeError, TypeError):
-            # Handle cases where reply_to_message might be None
-            pass
-        return True
-    
-    def create_quality_buttons(self, qualities: List[str], key: str, offset: int) -> List[List[InlineKeyboardButton]]:
-        """Create quality selection buttons"""
-        buttons = []
-        
-        # Add header button
-        buttons.append([
-            InlineKeyboardButton(text="🎯 Select Quality", callback_data="ident")
-        ])
-        
-        # Add quality buttons in pairs
-        for i in range(0, len(qualities) - 1, 2):
-            row = [
-                InlineKeyboardButton(
-                    text=qualities[i].title(),
-                    callback_data=f"fq#{qualities[i].lower()}#{key}#{offset}"
-                )
-            ]
+        if BUTTONS.get(key)!=None:
+            search = BUTTONS.get(key)
+        else:
+            search = FRESH.get(key)
             
-            # Add second button if available
-            if i + 1 < len(qualities):
-                row.append(
-                    InlineKeyboardButton(
-                        text=qualities[i + 1].title(),
-                        callback_data=f"fq#{qualities[i + 1].lower()}#{key}#{offset}"
-                    )
-                )
-            buttons.append(row)
-        
-        # Add back button
-        buttons.append([
-            InlineKeyboardButton(
-                text="📂 Back to Files 📂",
-                callback_data=f"fq#homepage#{key}#{offset}"
-            )
-        ])
-        
-        return buttons
-    
-    def create_season_buttons(self, seasons: List[str], key: str, offset: int) -> List[List[InlineKeyboardButton]]:
-        """Create season selection buttons"""
-        buttons = []
-        
-        # Add header button
-        buttons.append([
-            InlineKeyboardButton(text="⇊ ꜱᴇʟᴇᴄᴛ Sᴇᴀsᴏɴ ⇊", callback_data="ident")
-        ])
-        
-        # Add season buttons in pairs
-        for i in range(0, len(seasons) - 1, 2):
-            row = [
-                InlineKeyboardButton(
-                    text=seasons[i].title(),
-                    callback_data=f"fs#{seasons[i].lower()}#{key}#{offset}"
-                )
-            ]
+        if not search:
+            await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name),show_alert=True)
+            return
             
-            # Add second button if available
-            if i + 1 < len(seasons):
-                row.append(
-                    InlineKeyboardButton(
-                        text=seasons[i + 1].title(),
-                        callback_data=f"fs#{seasons[i + 1].lower()}#{key}#{offset}"
-                    )
-                )
-            buttons.append(row)
+        files, n_offset, total = await get_search_results(query.message.chat.id, search, offset=offset, filter=True)
         
-        # Add back button
-        buttons.append([
-            InlineKeyboardButton(
-                text="📂 Back to Files 📂",
-                callback_data=f"fs#homepage#{key}#{offset}"
-            )
-        ])
+        try:
+            n_offset = int(n_offset)
+        except:
+            n_offset = 0
+            
+        if not files:
+            return
+            
+        temp.GETALL[key] = files
+        temp.SHORT[query.from_user.id] = query.message.chat.id
+        settings = await get_settings(query.message.chat.id)
         
-        return buttons
-    
-    def create_file_buttons(self, files: List, key: str, settings: dict, 
-                          total_results: int, req: int, n_offset: str) -> List[List[InlineKeyboardButton]]:
-        """Create file listing buttons"""
-        buttons = []
+        # Feature 2: Sort options
+        sort_option = settings.get('sort', 'name')  # default sort by name
+        if sort_option == 'size':
+            files.sort(key=lambda x: x.file_size, reverse=True)
+        elif sort_option == 'date':
+            files.sort(key=lambda x: getattr(x, 'date', 0), reverse=True)
+        else:  # name
+            files.sort(key=lambda x: x.file_name.lower())
         
-        # Add control buttons
-        buttons.extend([
-            [
-                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
-            ],
-            [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-            ]
-        ])
-        
-        # Add file buttons if button display is enabled
         if settings.get('button'):
-            file_buttons = [
-                [
+            btn = []
+            
+            # Feature 3: Enhanced file buttons with emojis
+            for file in files:
+                file_ext = file.file_name.split('.')[-1].lower()
+                emoji = get_file_emoji(file_ext)
+                size_text = silent_size(file.file_size)
+                
+                # Feature 4: Truncate long filenames
+                display_name = clean_filename(file.file_name)
+                if len(display_name) > 35:
+                    display_name = display_name[:32] + "..."
+                
+                btn.append([
                     InlineKeyboardButton(
-                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}",
+                        text=f"{emoji} {size_text} | {extract_tag(file.file_name)} {display_name}", 
                         callback_data=f'file#{file.file_id}'
                     )
-                ]
-                for file in files
-            ]
-            # Insert file buttons after control buttons
-            buttons[2:2] = file_buttons
-        
-        # Add pagination buttons
-        if n_offset:
-            try:
-                page_size = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
-                total_pages = math.ceil(int(total_results) / page_size)
-                
-                buttons.append([
-                    InlineKeyboardButton("📄 Page", callback_data="pages"),
-                    InlineKeyboardButton(text=f"1/{total_pages}", callback_data="pages"),
-                    InlineKeyboardButton(text="➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
                 ])
-            except (KeyError, ValueError):
-                # Fallback to default pagination
-                total_pages = math.ceil(int(total_results) / 10)
-                buttons.append([
-                    InlineKeyboardButton("📄 Page", callback_data="pages"),
-                    InlineKeyboardButton(text=f"1/{total_pages}", callback_data="pages"),
-                    InlineKeyboardButton(text="➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+            
+            # Feature 5: Enhanced action buttons
+            btn.insert(0, [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0"),
+                InlineKeyboardButton("🔄 Sort", callback_data=f"sort#{key}#0")  # New sort button
+            ])
+            
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
+                InlineKeyboardButton("📊 Stats", callback_data=f"stats#{key}")  # New stats button
+            ])
+            
+            # Feature 6: Quick navigation for large result sets
+            if total > 50:
+                btn.insert(2, [
+                    InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0"),
+                    InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{((total-1)//10)*10}")
                 ])
         else:
-            buttons.append([
-                InlineKeyboardButton(text="🚫 That's everything!", callback_data="pages")
+            btn = []
+            btn.insert(0, [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0"),
+                InlineKeyboardButton("🔄 Sort", callback_data=f"sort#{key}#0")
             ])
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
+                InlineKeyboardButton("📊 Stats", callback_data=f"stats#{key}")
+            ])
+            
+            # Quick navigation for non-button mode too
+            if total > 50:
+                btn.insert(2, [
+                    InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0"),
+                    InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{((total-1)//10)*10}")
+                ])
         
-        return buttons
-    
-    def process_search_term(self, search_term: str, filter_value: str, homepage: bool = False) -> str:
-        """Process and modify search term based on filter"""
-        # Replace underscores with spaces for search
-        search_term = search_term.replace("_", " ")
+        # Existing pagination logic with enhancements
+        try:
+            if settings['max_btn']:
+                if 0 < offset <= 10:
+                    off_set = 0
+                elif offset == 0:
+                    off_set = None
+                else:
+                    off_set = offset - 10
+                    
+                current_page = math.ceil(int(offset)/10)+1
+                total_pages = math.ceil(total/10)
+                
+                if n_offset == 0:
+                    btn.append([
+                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), 
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
+                    ])
+                elif off_set is None:
+                    btn.append([
+                        InlineKeyboardButton("📄 Page", callback_data="pages"), 
+                        InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"), 
+                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                    ])
+                else:
+                    btn.append([
+                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
+                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                    ])
+            else:
+                if 0 < offset <= int(MAX_B_TN):
+                    off_set = 0
+                elif offset == 0:
+                    off_set = None
+                else:
+                    off_set = offset - int(MAX_B_TN)
+                    
+                current_page = math.ceil(int(offset)/int(MAX_B_TN))+1
+                total_pages = math.ceil(total/int(MAX_B_TN))
+                
+                if n_offset == 0:
+                    btn.append([
+                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), 
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
+                    ])
+                elif off_set is None:
+                    btn.append([
+                        InlineKeyboardButton("📄 Page", callback_data="pages"), 
+                        InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"), 
+                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                    ])
+                else:
+                    btn.append([
+                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
+                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                    ])
+        except KeyError:
+            await save_group_settings(query.message.chat.id, 'max_btn', True)
+            # Default pagination logic here (same as above with max_btn=True)
+            if 0 < offset <= 10:
+                off_set = 0
+            elif offset == 0:
+                off_set = None
+            else:
+                off_set = offset - 10
+                
+            current_page = math.ceil(int(offset)/10)+1
+            total_pages = math.ceil(total/10)
+            
+            if n_offset == 0:
+                btn.append([
+                    InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), 
+                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
+                ])
+            elif off_set is None:
+                btn.append([
+                    InlineKeyboardButton("📄 Page", callback_data="pages"), 
+                    InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"), 
+                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ])
+            else:
+                btn.append([
+                    InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
+                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ])
         
-        if homepage:
-            return search_term
+        # Feature 7: Loading indicator
+        await query.answer("🔄 Loading...", show_alert=False)
         
-        # Remove existing filter if present
-        if filter_value in search_term:
-            search_term = search_term.replace(filter_value, "").strip()
-        
-        # Add new filter
-        return f"{search_term} {filter_value}".strip()
-    
-    def calculate_time_difference(self, curr_time: datetime.time) -> str:
-        """Calculate time difference for display"""
-        now = datetime.now(self.timezone).time()
-        
-        curr_td = timedelta(
-            hours=curr_time.hour,
-            minutes=curr_time.minute,
-            seconds=curr_time.second + (curr_time.microsecond / 1000000)
-        )
-        
-        now_td = timedelta(
-            hours=now.hour,
-            minutes=now.minute,
-            seconds=now.second + (now.microsecond / 1000000)
-        )
-        
-        time_difference = now_td - curr_td
-        return f"{time_difference.total_seconds():.2f}"
+        if not settings.get('button'):
+            cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+            time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
+            remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+            
+            # Feature 8: Enhanced caption with more info
+            cap = await get_enhanced_cap(settings, remaining_seconds, files, query, total, search, offset, sort_option)
+            
+            try:
+                await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+            except MessageNotModified:
+                pass
+        else:
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(btn)
+                )
+            except MessageNotModified:
+                pass
+                
+    except Exception as e:
+        LOGGER.error(f"Error In Next Function - {e}")
+        await query.answer("❌ Something went wrong! Please try again.", show_alert=True)
 
-# Handler implementations
-handler = CallbackHandlers()
+
+# Feature 2: Helper function for file emojis
+def get_file_emoji(file_ext):
+    """Return appropriate emoji for file type"""
+    emoji_map = {
+        'mp4': '🎬', 'avi': '🎬', 'mkv': '🎬', 'mov': '🎬', 'wmv': '🎬',
+        'mp3': '🎵', 'flac': '🎵', 'wav': '🎵', 'aac': '🎵',
+        'pdf': '📄', 'doc': '📄', 'docx': '📄', 'txt': '📄',
+        'zip': '📦', 'rar': '📦', '7z': '📦', 'tar': '📦',
+        'jpg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'jpeg': '🖼️',
+        'apk': '📱', 'exe': '💻', 'dmg': '💻'
+    }
+    return emoji_map.get(file_ext, '📁')
+
+
+# Feature 8: Enhanced caption function
+async def get_enhanced_cap(settings, remaining_seconds, files, query, total, search, offset, sort_option):
+    """Generate enhanced caption with additional information"""
+    cap = await get_cap(settings, remaining_seconds, files, query, total, search, offset)
+    
+    # Add sorting info
+    sort_text = {
+        'name': '📝 Name',
+        'size': '📊 Size', 
+        'date': '📅 Date'
+    }
+    
+    # Add additional stats
+    total_size = sum(file.file_size for file in files if hasattr(file, 'file_size'))
+    avg_size = total_size / len(files) if files else 0
+    
+    enhanced_info = f"\n\n📈 <b>Stats:</b>\n"
+    enhanced_info += f"🔍 Sorted by: {sort_text.get(sort_option, '📝 Name')}\n"
+    enhanced_info += f"📦 Total Size: {silent_size(total_size)}\n"
+    enhanced_info += f"📊 Avg Size: {silent_size(avg_size)}\n"
+    enhanced_info += f"⏱️ Response Time: {remaining_seconds}s"
+    
+    return cap + enhanced_info
 
 @Client.on_callback_query(filters.regex(r"^qualities#"))
 async def qualities_cb_handler(client: Client, query: CallbackQuery):

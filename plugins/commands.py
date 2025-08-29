@@ -7,7 +7,7 @@ import asyncio
 import time
 import pytz
 from logging_helper import LOGGER
-from .pm_filter import enhanced_auto_filter as auto_filter
+from .pm_filter import auto_filter 
 from Script import script
 from datetime import datetime
 from database.refer import referdb
@@ -157,7 +157,7 @@ async def start(client, message):
         movies = message.command[1].split("-", 1)[1] 
         movie = movies.replace('-',' ')
         message.text = movie 
-        await enhanced_auto_filter(client, message) 
+        await auto_filter(client, message) 
         return
             
     data = message.command[1]

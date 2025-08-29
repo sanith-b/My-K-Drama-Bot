@@ -394,3 +394,25 @@ Mᴇꜱꜱᴀɢᴇ : <b>{}</b>"""
     PAGE_TXT = """Haha, I like that energy! 😄"""    
    
     SOURCE_TXT = """<b>ՏOᑌᖇᑕᗴ ᑕOᗪᗴ :</b> 👇\nThis Is An Open-Source Project. You Can Use It Freely, But Selling The Source Code Is Strictly Prohibited."""
+
+ENHANCED_IMDB_TEMPLATE_TXT = """
+<b>🎬 {title} ({year})</b>
+{original_title and f"<i>Original: {original_title}</i>" or ""}
+
+⭐ <b>Rating:</b> {rating}/10 ({votes} votes)
+🎭 <b>Genre:</b> {genres}
+⏱️ <b>Runtime:</b> {runtime}
+🎬 <b>Director:</b> {director}
+👥 <b>Cast:</b> {cast}
+
+📖 <b>Plot:</b> {plot}
+
+💰 <b>Budget:</b> {budget}
+💸 <b>Revenue:</b> {revenue}
+🌍 <b>Countries:</b> {countries}
+🗣️ <b>Languages:</b> {languages}
+
+🔗 <b>Links:</b> <a href="{tmdb_url}">TMDB</a> | <a href="{imdb_url}">IMDb</a> | <a href="{trailer_url}">Trailer</a>
+
+📊 <b>Results:</b> {total_results} files found in {search_time}s
+"""

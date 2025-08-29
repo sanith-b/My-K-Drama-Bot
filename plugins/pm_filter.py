@@ -817,28 +817,221 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
-    _, id, user = query.data.split('#')
-    if int(user) != 0 and query.from_user.id != int(user):
-        return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-    movies = await get_poster(id, id=True)
-    movie = movies.get('title')
-    movie = re.sub(r"[:-]", " ", movie)
-    movie = re.sub(r"\s+", " ", movie).strip()
-    await query.answer(script.TOP_ALRT_MSG)
-    files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
-    if files:
-        k = (movie, files, offset, total_results)
-        await auto_filter(bot, query, k)
-    else:
-        reqstr1 = query.from_user.id if query.from_user else 0
-        reqstr = await bot.get_users(reqstr1)
-        if NO_RESULTS_MSG:
-            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
-        contact_admin_button = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
-        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
-        await asyncio.sleep(10)
-        await k.delete()
+    try:
+        _, id, user = query.data.split('#')
+        
+        # Feature 1: Rate limiting for poll searches
+        user_id = query.from_user.id
+        current_time = time.time()
+        if not hasattr(temp, 'SPOLL_COOLDOWN'):
+            temp.SPOLL_COOLDOWN = {}
+        
+        if user_id in temp.SPOLL_COOLDOWN:
+            if current_time - temp.SPOLL_COOLDOWN[user_id] < 3:  # 3 second cooldown
+                return await query.answer("⏰ Please wait a moment before searching again!", show_alert=True)
+        temp.SPOLL_COOLDOWN[user_id] = current_time
+        
+        if int(user) != 0 and query.from_user.id != int(user):
+            return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+        
+        # Feature 2: Loading indicator with movie fetching
+        await query.answer("🎬 Fetching movie details...", show_alert=False)
+        
+        movies = await get_poster(id, id=True)
+        if not movies:
+            return await query.answer("❌ Movie details not found!", show_alert=True)
+        
+        movie = movies.get('title')
+        original_title = movie  # Store original for logging
+        
+        # Feature 3: Enhanced title cleaning with better regex
+        movie = re.sub(r"[:\-\.\(\)\[\]{}]", " ", movie)  # Remove more special characters
+        movie = re.sub(r"\b(19|20)\d{2}\b", "", movie)    # Remove years
+        movie = re.sub(r"\b(hindi|english|tamil|telugu|malayalam|kannada|bengali|punjabi|marathi|gujarati)\b", "", movie, flags=re.IGNORECASE)  # Remove language names
+        movie = re.sub(r"\b(dvdrip|brrip|webrip|hdtv|720p|1080p|480p|4k|hd|hdrip|cam|ts|tc)\b", "", movie, flags=re.IGNORECASE)  # Remove quality terms
+        movie = re.sub(r"\s+", " ", movie).strip()
+        
+        # Feature 4: Alternative search terms
+        search_terms = [
+            movie,  # Cleaned title
+            original_title,  # Original title as backup
+        ]
+        
+        # Add partial searches for longer titles
+        if len(movie.split()) > 3:
+            words = movie.split()
+            search_terms.append(" ".join(words[:3]))  # First 3 words
+            search_terms.append(" ".join(words[-3:]))  # Last 3 words
+        
+        await query.answer(script.TOP_ALRT_MSG)
+        
+        # Feature 5: Try multiple search attempts
+        files = None
+        successful_search = None
+        
+        for search_term in search_terms:
+            if len(search_term.strip()) < 2:  # Skip too short terms
+                continue
+                
+            files, offset, total_results = await get_search_results(
+                query.message.chat.id, 
+                search_term, 
+                offset=0, 
+                filter=True
+            )
+            
+            if files:
+                successful_search = search_term
+                break
+        
+        if files:
+            # Feature 6: Add search context to results
+            search_info = {
+                'original_title': original_title,
+                'search_term': successful_search,
+                'movie_id': id,
+                'poster_data': movies
+            }
+            
+            k = (successful_search, files, offset, total_results, search_info)
+            await auto_filter(bot, query, k)
+            
+            # Feature 7: Log successful searches for analytics
+            if hasattr(temp, 'SEARCH_ANALYTICS'):
+                temp.SEARCH_ANALYTICS[id] = {
+                    'title': original_title,
+                    'search_term': successful_search,
+                    'results_count': total_results,
+                    'timestamp': current_time,
+                    'user_id': user_id
+                }
+            
+        else:
+            # Enhanced no results handling
+            reqstr1 = query.from_user.id if query.from_user else 0
+            reqstr = await bot.get_users(reqstr1)
+            
+            # Feature 8: Enhanced no results message with movie info
+            movie_info = f"🎬 <b>{original_title}</b>\n"
+            if movies.get('year'):
+                movie_info += f"📅 Year: {movies.get('year')}\n"
+            if movies.get('genre'):
+                movie_info += f"🎭 Genre: {', '.join(movies.get('genre', [])[:3])}\n"  # Show first 3 genres
+            if movies.get('rating'):
+                movie_info += f"⭐ Rating: {movies.get('rating')}\n"
+            
+            no_results_msg = f"{movie_info}\n❌ Sorry, this movie is not available right now.\n\n🔍 <b>Search attempts:</b>\n"
+            for i, term in enumerate(search_terms[:3], 1):  # Show first 3 attempts
+                if term.strip():
+                    no_results_msg += f"{i}. '{term}'\n"
+            
+            if NO_RESULTS_MSG:
+                # Feature 9: Enhanced logging with movie details
+                log_msg = script.NORSLTS.format(reqstr.id, reqstr.mention, original_title)
+                log_msg += f"\n\n📊 <b>Search Details:</b>"
+                log_msg += f"\n🆔 Movie ID: {id}"
+                log_msg += f"\n🎬 Original Title: {original_title}"
+                log_msg += f"\n🔍 Cleaned Title: {movie}"
+                log_msg += f"\n📅 Search Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')}"
+                
+                await bot.send_message(chat_id=BIN_CHANNEL, text=log_msg)
+            
+            # Feature 10: Enhanced action buttons
+            action_buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔔 Request to Admin", url=OWNER_LNK)],
+                [InlineKeyboardButton("🔍 Try Manual Search", callback_data=f"manual_search#{id}#{user}")],
+                [InlineKeyboardButton("📝 Suggest Alternative", callback_data=f"suggest#{id}#{user}")]
+            ])
+            
+            k = await query.message.edit(
+                text=no_results_msg,
+                reply_markup=action_buttons,
+                parse_mode=enums.ParseMode.HTML
+            )
+            
+            # Feature 11: Auto-cleanup with longer delay for better UX
+            await asyncio.sleep(15)  # Increased from 10 to 15 seconds
+            try:
+                await k.delete()
+            except Exception:
+                pass  # Message might already be deleted
+                
+    except ValueError:
+        await query.answer("❌ Invalid request format!", show_alert=True)
+    except Exception as e:
+        LOGGER.error(f"Error in spoll handler - {e}")
+        await query.answer("❌ Something went wrong! Please try again later.", show_alert=True)
+
+
+# Feature 12: Helper function for manual search
+@Client.on_callback_query(filters.regex(r"^manual_search"))
+async def manual_search_handler(bot, query):
+    try:
+        _, movie_id, user = query.data.split('#')
+        
+        if int(user) != 0 and query.from_user.id != int(user):
+            return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+        
+        movies = await get_poster(movie_id, id=True)
+        title = movies.get('title', 'Unknown Movie')
+        
+        manual_search_msg = f"🔍 <b>Manual Search</b>\n\n"
+        manual_search_msg += f"🎬 Movie: <code>{title}</code>\n\n"
+        manual_search_msg += f"💡 <b>Tips for better results:</b>\n"
+        manual_search_msg += f"• Try searching with just the movie name\n"
+        manual_search_msg += f"• Remove year and language\n"
+        manual_search_msg += f"• Try alternative spellings\n"
+        manual_search_msg += f"• Search for actor/director names\n\n"
+        manual_search_msg += f"👆 Just type your search query in the chat!"
+        
+        back_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data=f"spol#{movie_id}#{user}")]
+        ])
+        
+        await query.message.edit(
+            text=manual_search_msg,
+            reply_markup=back_button,
+            parse_mode=enums.ParseMode.HTML
+        )
+        
+    except Exception as e:
+        LOGGER.error(f"Error in manual search handler - {e}")
+        await query.answer("❌ Something went wrong!", show_alert=True)
+
+
+# Feature 13: Suggestion handler
+@Client.on_callback_query(filters.regex(r"^suggest"))
+async def suggest_handler(bot, query):
+    try:
+        _, movie_id, user = query.data.split('#')
+        
+        if int(user) != 0 and query.from_user.id != int(user):
+            return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+        
+        movies = await get_poster(movie_id, id=True)
+        title = movies.get('title', 'Unknown Movie')
+        
+        suggest_msg = f"📝 <b>Suggest Alternative</b>\n\n"
+        suggest_msg += f"🎬 Original: <code>{title}</code>\n\n"
+        suggest_msg += f"💡 You can suggest:\n"
+        suggest_msg += f"• Alternative movie titles\n"
+        suggest_msg += f"• Similar movies\n"
+        suggest_msg += f"• Different language versions\n\n"
+        suggest_msg += f"📩 Send your suggestion to: {OWNER_LNK}"
+        
+        back_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data=f"spol#{movie_id}#{user}")]
+        ])
+        
+        await query.message.edit(
+            text=suggest_msg,
+            reply_markup=back_button,
+            parse_mode=enums.ParseMode.HTML
+        )
+        
+    except Exception as e:
+        LOGGER.error(f"Error in suggest handler - {e}")
+        await query.answer("❌ Something went wrong!", show_alert=True)
                 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):

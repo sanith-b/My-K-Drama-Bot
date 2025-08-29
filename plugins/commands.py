@@ -157,7 +157,7 @@ async def start(client, message):
         movies = message.command[1].split("-", 1)[1] 
         movie = movies.replace('-',' ')
         message.text = movie 
-        await auto_filter(client, message) 
+        await enhanced_auto_filter(client, message) 
         return
             
     data = message.command[1]

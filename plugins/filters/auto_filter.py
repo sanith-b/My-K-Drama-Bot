@@ -1,332 +1,320 @@
-# filters/auto_filter.py
+"""
+Auto Filter Plugin for My K-Drama Bot
+
+This module handles automatic filtering and searching of K-Drama content
+when users send messages to the bot. It searches the database for matching
+content and provides inline keyboard results.
+"""
 
 import asyncio
-import logging
-import math
-import pytz
 import re
-from datetime import datetime, timedelta
-from pyrogram import enums
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
+from typing import List, Dict, Any
+from pyrogram import Client, filters, enums
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid
 
-from info import DELETE_TIME, MAX_B_TN, temp
-from Script import script
-from utils import (
-    get_settings, save_group_settings, get_size, clean_filename,
-    clean_search_text, get_cap, get_poster, temp
-)
-from database.ia_filterdb import get_search_results
-from handlers.spell_check import advantage_spell_chok, ai_spell_check
+from info import DELETE_TIME, MAX_B_TN,
+from database.connections_mdb import active_connection
+from utils import get_size, is_subscribed, get_poster, search_gagala, temp as utils_temp
+from database.filters_mdb import Media, get_search_results, get_bad_files
+from database.users_mdb import get_user, update_user
 
-logger = logging.getLogger(__name__)
+# Pattern for file names and queries
+BUTTONS = {}
+SPELL_CHECK = {}
+class TempData:
+    def __init__(self):
+        self.BUTTONS: Dict[int, Dict] = {}
+        self.SPELL_CHECK: Dict[int, bool] = {}
+        self.USER_SESSIONS: Dict[int, Any] = {}
+        self.INVITE_LINK = os.environ.get("INVITE_LINK", "")
 
-# Global dictionaries
-FRESH = {}
+temp = TempData()
 
-
-async def auto_filter(client, msg, spoll=False):
-    """Main auto filter function"""
-    curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+@Client.on_message(filters.group & filters.text & filters.incoming)
+async def give_filter(bot, message: Message):
+    """
+    Main auto filter function that processes incoming messages
+    and searches for K-Drama content automatically
+    """
+    # Skip if message is from a bot
+    if message.from_user and message.from_user.is_bot:
+        return
     
-    if not spoll:
-        message = msg
-        if message.text.startswith("/"):
+    # Get group settings
+    group_id = message.chat.id
+    name = message.text
+    
+    # Skip if auto filter is disabled for this group
+    k = await is_subscribed(bot, message)
+    if k == False:
+        btn = [[
+            InlineKeyboardButton('🤖 Join Updates Channel', url=temp.INVITE_LINK)
+        ]]
+        if message.from_user:
+            try:
+                await message.reply_text(
+                    "**You are not in our back-up channel given below so you do not get result from this bot. First join and try again.**",
+                    reply_markup=InlineKeyboardMarkup(btn),
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+            except:
+                pass
+        return
+    
+    # Clean and prepare search query
+    name = re.sub(r"[+\-!@#$%^&*()_{}|\"'?.,;`~\[\]\\]", " ", name).strip()
+    name = re.sub(r"\s+", " ", name)  # Remove extra spaces
+    
+    # Skip very short queries
+    if len(name) < 2:
+        return
+    
+    # Search for files in database
+    files, offset, total_results = await get_search_results(name, max_results=10)
+    
+    if not files:
+        # No results found - check for spelling suggestions
+        if temp.SPELL_CHECK.get(message.from_user.id):
             return
-            
-        if re.findall(r"((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
-            return
-            
-        if len(message.text) < 100:
-            search = message.text
-            search = search.lower()
-            m = await message.reply_text(
-                f'**🔎 sᴇᴀʀᴄʜɪɴɢ** `{search}`', 
-                reply_to_message_id=message.id
-            )
-            
-            # Clean and process search query
-            search = await clean_search_query(search)
-            
-            files, offset, total_results = await get_search_results(
-                message.chat.id, search, offset=0, filter=True
-            )
-            settings = await get_settings(message.chat.id)
-            
-            if not files:
-                return await handle_no_results(client, message, m, search, settings)
-        else:
-            return
-    else:
-        message = msg.message.reply_to_message
-        search, files, offset, total_results = spoll
-        m = await message.reply_text(
-            f'**🔎 sᴇᴀʀᴄʜɪɴɢ** `{search}`', 
-            reply_to_message_id=message.id
-        )
-        settings = await get_settings(message.chat.id)
-        await msg.message.delete()
-    
-    # Generate unique key for this search
-    key = f"{message.chat.id}-{message.id}"
-    FRESH[key] = search
-    temp.GETALL[key] = files
-    temp.SHORT[message.from_user.id] = message.chat.id
-    
-    # Build button layout
-    btn = await build_search_buttons(files, settings, key)
-    btn = await add_search_pagination(btn, settings, message, key, offset, total_results)
-    
-    # Get IMDB info if enabled
-    imdb = await get_poster(search, file=(files[0]).file_name) if settings["imdb"] else None
-    
-    # Generate caption
-    cap = await generate_search_caption(settings, search, files, total_results, message, imdb)
-    
-    # Send results
-    await send_search_results(message, m, cap, btn, imdb, settings)
-
-
-async def clean_search_query(search):
-    """Clean and process search query"""
-    find = search.split(" ")
-    search = ""
-    removes = ["in", "upload", "series", "full", "horror", "thriller", "mystery", "print", "file"]
-    
-    for x in find:
-        if x in removes:
-            continue
-        else:
-            search = search + x + " "
-    
-    # Remove common patterns
-    search = re.sub(
-        r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|bro|bruh|broh|helo|that|find|dubbed|link|venum|iruka|pannunga|pannungga|anuppunga|anupunga|anuppungga|anupungga|film|undo|kitti|kitty|tharu|kittumo|kittum|movie|any(one)|with\ssubtitle(s)?)", 
-        "", search, flags=re.IGNORECASE
-    )
-    
-    search = re.sub(r"\s+", " ", search).strip()
-    search = search.replace("-", " ")
-    search = search.replace(":", "")
-    
-    return search
-
-
-async def handle_no_results(client, message, m, search, settings):
-    """Handle case when no files are found"""
-    if settings["spell_check"]:
-        ai_sts = await m.edit('🤖 ᴘʟᴇᴀꜱᴇ ᴡᴀɪᴛ, ᴀɪ ɪꜱ ᴄʜᴇᴄᴋɪɴɢ ʏᴏᴜʀ ꜱᴘᴇʟʟɪɴɢ...')
-        is_misspelled = await ai_spell_check(chat_id=message.chat.id, wrong_name=search)
         
+        # Try spell check or similar search
+        is_misspelled = await search_gagala(name)
         if is_misspelled:
-            await ai_sts.edit(f'✅ Aɪ Sᴜɢɢᴇsᴛᴇᴅ: <code>{is_misspelled}</code>\n🔍 Searching for it...')
-            message.text = is_misspelled
-            await ai_sts.delete()
-            return await auto_filter(client, message)
-            
-        await ai_sts.delete()
-        return await advantage_spell_chok(client, message)
+            btn = [[
+                InlineKeyboardButton("Search Google", url=f"https://www.google.com/search?q={name}")
+            ]]
+            await message.reply_text(
+                f"**I couldn't find anything related to '{name}'. Check the spelling or try searching on Google.**",
+                reply_markup=InlineKeyboardMarkup(btn)
+            )
+        return
+    
+    # Create pagination buttons
+    pre = 'filep' if settings['file_secure'] else 'file'
+    
+    if total_results == 1:
+        # Single result - send directly
+        await send_single_result(bot, message, files[0], name)
     else:
-        await m.delete()
-        return await advantage_spell_chok(client, message)
+        # Multiple results - send with pagination
+        await send_multiple_results(bot, message, files, name, total_results, offset)
 
-
-async def build_search_buttons(files, settings, key):
-    """Build buttons for search results"""
-    btn = []
-    
-    if settings.get('button'):
-        btn = [
-            [InlineKeyboardButton(
-                text=f"🔗 {get_size(file.file_size)} ≽ " + clean_filename(file.file_name),
-                callback_data=f'file#{file.file_id}'
-            )]
-            for file in files
-        ]
-    
-    # Add filter buttons
-    btn.insert(0, [
-        InlineKeyboardButton(f'Qᴜᴀʟɪᴛʏ', callback_data=f"qualities#{key}"),
-        InlineKeyboardButton("Lᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}"),
-        InlineKeyboardButton("Sᴇᴀsᴏɴ", callback_data=f"seasons#{key}")
-    ])
-    
-    # Add premium and send all buttons
-    btn.insert(0, [
-        InlineKeyboardButton(
-            "⚜️ 𝐑𝐞𝐦𝐨𝐯𝐞 𝐚𝐝𝐬 ⚜️",
-            url=f"https://t.me/{temp.U_NAME}?start=premium"
-        ),
-        InlineKeyboardButton("Sᴇɴᴅ Aʟʟ", callback_data=f"sendfiles#{key}")
-    ])
-    
-    return btn
-
-
-async def add_search_pagination(btn, settings, message, key, offset, total_results):
-    """Add pagination buttons"""
-    if offset != "":
-        req = message.from_user.id if message.from_user else 0
-        try:
-            if settings.get('max_btn', True):
-                btn.append([
-                    InlineKeyboardButton("ᴘᴀɢᴇ", callback_data="pages"),
-                    InlineKeyboardButton(
-                        text=f"1/{math.ceil(int(total_results)/10)}",
-                        callback_data="pages"
-                    ),
-                    InlineKeyboardButton(
-                        text="ɴᴇxᴛ ⋟",
-                        callback_data=f"next_{req}_{key}_{offset}"
-                    )
-                ])
-            else:
-                btn.append([
-                    InlineKeyboardButton("ᴘᴀɢᴇ", callback_data="pages"),
-                    InlineKeyboardButton(
-                        text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",
-                        callback_data="pages"
-                    ),
-                    InlineKeyboardButton(
-                        text="ɴᴇxᴛ ⋟",
-                        callback_data=f"next_{req}_{key}_{offset}"
-                    )
-                ])
-        except KeyError:
-            await save_group_settings(message.chat.id, 'max_btn', True)
+async def send_single_result(bot: Client, message: Message, file: Media, query: str):
+    """Send a single file result"""
+    try:
+        file_caption = f"**File Name:** `{file.file_name}`\n**Size:** `{get_size(file.file_size)}`"
+        
+        btn = [[
+            InlineKeyboardButton("📁 Get File", callback_data=f"file#{file.file_id}"),
+        ]]
+        
+        # Add more info button if available
+        if file.caption:
             btn.append([
-                InlineKeyboardButton("ᴘᴀɢᴇ", callback_data="pages"),
+                InlineKeyboardButton("ℹ️ More Info", callback_data=f"info#{file.file_id}")
+            ])
+        
+        reply_markup = InlineKeyboardMarkup(btn)
+        
+        k = await message.reply_text(
+            text=file_caption,
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        
+        # Auto-delete message after specified time
+        if DELETE_TIME:
+            await asyncio.sleep(DELETE_TIME)
+            await k.delete()
+            
+    except Exception as e:
+        print(f"Error sending single result: {e}")
+
+async def send_multiple_results(bot: Client, message: Message, files: List[Media], 
+                              query: str, total_results: int, offset: int):
+    """Send multiple file results with pagination"""
+    try:
+        # Create file buttons
+        btn = []
+        for file in files:
+            btn.append([
                 InlineKeyboardButton(
-                    text=f"1/{math.ceil(int(total_results)/10)}",
-                    callback_data="pages"
-                ),
-                InlineKeyboardButton(
-                    text="ɴᴇxᴛ ⋟",
-                    callback_data=f"next_{req}_{key}_{offset}"
+                    f"📁 {file.file_name[:35]}...",
+                    callback_data=f"file#{file.file_id}"
                 )
             ])
-    else:
-        btn.append([InlineKeyboardButton(
-            text="↭ ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ↭",
-            callback_data="pages"
-        )])
-    
-    return btn
-
-
-async def generate_search_caption(settings, search, files, total_results, message, imdb):
-    """Generate caption for search results"""
-    cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-    remaining_seconds = "0.00"  # Simplified for now
-    
-    TEMPLATE = script.IMDB_TEMPLATE_TXT
-    if settings.get('template'):
-        TEMPLATE = settings['template']
-    
-    if imdb:
-        cap = TEMPLATE.format(
-            query=search,
-            title=imdb['title'],
-            votes=imdb['votes'],
-            aka=imdb["aka"],
-            seasons=imdb["seasons"],
-            box_office=imdb['box_office'],
-            localized_title=imdb['localized_title'],
-            kind=imdb['kind'],
-            imdb_id=imdb["imdb_id"],
-            cast=imdb["cast"],
-            runtime=imdb["runtime"],
-            countries=imdb["countries"],
-            certificates=imdb["certificates"],
-            languages=imdb["languages"],
-            director=imdb["director"],
-            writer=imdb["writer"],
-            producer=imdb["producer"],
-            composer=imdb["composer"],
-            cinematographer=imdb["cinematographer"],
-            music_team=imdb["music_team"],
-            distributors=imdb["distributors"],
-            release_date=imdb['release_date'],
-            year=imdb['year'],
-            genres=imdb['genres'],
-            poster=imdb['poster'],
-            plot=imdb['plot'],
-            rating=imdb['rating'],
-            url=imdb['url'],
-            **locals()
-        )
-        temp.IMDB_CAP[message.from_user.id] = cap
         
-        if not settings.get('button'):
-            cap += "\n\n<b>🧾 <u>Your Requested Files Are Here</u> 👇</b>"
-            for idx, file in enumerate(files, start=1):
-                cap += f"<b>\n{idx}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>[{get_size(file.file_size)}] {clean_filename(file.file_name)}\n</a></b>"
-    else:
-        if settings.get('button'):
-            cap = f"<b>🏷 ᴛɪᴛʟᴇ : <code>{search}</code>\n🧱 ᴛᴏᴛᴀʟ ꜰɪʟᴇꜱ : <code>{total_results}</code>\n⏰ ʀᴇsᴜʟᴛ ɪɴ : <code>{remaining_seconds} Sᴇᴄᴏɴᴅs</code>\n\n📝 ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ : {message.from_user.mention}\n⚜️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ : ⚡ {message.chat.title or temp.B_LINK or 'ᴅʀᴇᴀᴍxʙᴏᴛᴢ'} \n\n🧾 <u>Your Requested Files Are Here</u> 👇 \n\n</b>"
-        else:
-            cap = f"<b>🏷 ᴛɪᴛʟᴇ : <code>{search}</code>\n🧱 ᴛᴏᴛᴀʟ ꜰɪʟᴇꜱ : <code>{total_results}</code>\n⏰ ʀᴇsᴜʟᴛ ɪɴ : <code>{remaining_seconds} Sᴇᴄᴏɴᴅs</code>\n\n📝 ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ : {message.from_user.mention}\n⚜️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ : ⚡ {message.chat.title or temp.B_LINK or 'ᴅʀᴇᴀᴍxʙᴏᴛᴢ'} \n\n🧾 <u>Your Requested Files Are Here</u> 👇 \n\n</b>"
-
-            for idx, file in enumerate(files, start=1):
-                cap += f"<b>\n{idx}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>[{get_size(file.file_size)}] {clean_filename(file.file_name)}\n</a></b>"
-    
-    return cap
-
-
-async def send_search_results(message, m, cap, btn, imdb, settings):
-    """Send search results to user"""
-    if imdb and imdb.get('poster'):
-        try:
-            hehe = await message.reply_photo(
-                photo=imdb.get('poster'), 
-                caption=cap, 
-                reply_markup=InlineKeyboardMarkup(btn), 
-                parse_mode=enums.ParseMode.HTML
+        # Add pagination buttons if needed
+        nav_buttons = []
+        if offset > 0:
+            nav_buttons.append(
+                InlineKeyboardButton("⬅️ Previous", callback_data=f"next_{query}_{offset-10}")
             )
-            await m.delete()
-            await handle_auto_delete(settings, hehe, message)
-        except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
-            pic = imdb.get('poster')
-            poster = pic.replace('.jpg', "._V1_UX360.jpg")
-            hmm = await message.reply_photo(
-                photo=poster, 
-                caption=cap, 
-                reply_markup=InlineKeyboardMarkup(btn), 
-                parse_mode=enums.ParseMode.HTML
+        if offset + 10 < total_results:
+            nav_buttons.append(
+                InlineKeyboardButton("Next ➡️", callback_data=f"next_{query}_{offset+10}")
             )
-            await m.delete()
-            await handle_auto_delete(settings, hmm, message)
-        except Exception as e:
-            logger.exception(e)
-            dxb = await message.reply_text(
-                text=cap, 
-                reply_markup=InlineKeyboardMarkup(btn), 
-                parse_mode=enums.ParseMode.HTML
-            )
-            await m.delete()
-            await handle_auto_delete(settings, dxb, message)
-    else:
-        dxb = await message.reply_text(
-            text=cap, 
-            reply_markup=InlineKeyboardMarkup(btn), 
-            disable_web_page_preview=True, 
-            parse_mode=enums.ParseMode.HTML
+        
+        if nav_buttons:
+            btn.append(nav_buttons)
+        
+        # Add close button
+        btn.append([
+            InlineKeyboardButton("❌ Close", callback_data="close_data")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(btn)
+        
+        caption = f"**Found {total_results} results for:** `{query}`\n**Showing:** `{offset+1}-{min(offset+10, total_results)}`"
+        
+        k = await message.reply_text(
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
         )
-        await m.delete()
-        await handle_auto_delete(settings, dxb, message)
-
-
-async def handle_auto_delete(settings, sent_message, original_message):
-    """Handle auto deletion of messages"""
-    try:
-        if settings.get('auto_delete', False):
+        
+        # Store message info for pagination
+        temp.BUTTONS[k.id] = {
+            'query': query,
+            'total': total_results,
+            'files': files
+        }
+        
+        # Auto-delete message after specified time
+        if DELETE_TIME:
             await asyncio.sleep(DELETE_TIME)
-            await sent_message.delete()
-            await original_message.delete()
-    except KeyError:
-        await save_group_settings(original_message.chat.id, 'auto_delete', True)
-        await asyncio.sleep(DELETE_TIME)
-        await sent_message.delete()
-        await original_message.delete()
+            try:
+                await k.delete()
+                if k.id in temp.BUTTONS:
+                    del temp.BUTTONS[k.id]
+            except:
+                pass
+                
     except Exception as e:
-        logger.exception(f"Error in auto delete: {e}")
+        print(f"Error sending multiple results: {e}")
+
+@Client.on_callback_query(filters.regex(r"^next_"))
+async def next_page(bot: Client, query: CallbackQuery):
+    """Handle pagination for search results"""
+    try:
+        _, search_query, offset = query.data.split('_', 2)
+        offset = int(offset)
+        
+        # Search for files with new offset
+        files, _, total_results = await get_search_results(search_query, offset=offset, max_results=10)
+        
+        if not files:
+            await query.answer("No more results!", show_alert=True)
+            return
+        
+        # Create new buttons
+        btn = []
+        for file in files:
+            btn.append([
+                InlineKeyboardButton(
+                    f"📁 {file.file_name[:35]}...",
+                    callback_data=f"file#{file.file_id}"
+                )
+            ])
+        
+        # Navigation buttons
+        nav_buttons = []
+        if offset > 0:
+            nav_buttons.append(
+                InlineKeyboardButton("⬅️ Previous", callback_data=f"next_{search_query}_{offset-10}")
+            )
+        if offset + 10 < total_results:
+            nav_buttons.append(
+                InlineKeyboardButton("Next ➡️", callback_data=f"next_{search_query}_{offset+10}")
+            )
+        
+        if nav_buttons:
+            btn.append(nav_buttons)
+        
+        btn.append([
+            InlineKeyboardButton("❌ Close", callback_data="close_data")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(btn)
+        caption = f"**Found {total_results} results for:** `{search_query}`\n**Showing:** `{offset+1}-{min(offset+10, total_results)}`"
+        
+        await query.edit_message_text(
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        print(f"Error in pagination: {e}")
+        await query.answer("Error occurred!", show_alert=True)
+
+@Client.on_callback_query(filters.regex(r"^file#"))
+async def send_file(bot: Client, query: CallbackQuery):
+    """Handle file sending when user clicks on a file button"""
+    try:
+        file_id = query.data.split('#')[1]
+        
+        # Get file details from database
+        file = await Media.get(file_id)
+        if not file:
+            await query.answer("File not found!", show_alert=True)
+            return
+        
+        # Check if user is subscribed (if required)
+        if not await is_subscribed(bot, query.message):
+            await query.answer("Join our channel first!", show_alert=True)
+            return
+        
+        # Send the file
+        caption = f"**{file.file_name}**\n\n**Size:** `{get_size(file.file_size)}`\n**Join:** @YourChannel"
+        
+        await bot.send_cached_media(
+            chat_id=query.from_user.id,
+            file_id=file.file_id,
+            caption=caption,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        
+        await query.answer("File sent to your PM!", show_alert=True)
+        
+    except UserIsBlocked:
+        await query.answer("Start me in PM first!", show_alert=True)
+    except PeerIdInvalid:
+        await query.answer("Start me in PM first!", show_alert=True)
+    except Exception as e:
+        print(f"Error sending file: {e}")
+        await query.answer("Error occurred!", show_alert=True)
+
+@Client.on_callback_query(filters.regex(r"^close_data"))
+async def close_data(bot: Client, query: CallbackQuery):
+    """Close/delete the search results message"""
+    try:
+        await query.message.delete()
+    except:
+        await query.message.edit_text("**Closed!**")
+
+# Helper function to check group settings
+async def get_group_settings(group_id: int) -> Dict[str, Any]:
+    """Get group-specific settings"""
+    # This would connect to your database and get group settings
+    # Placeholder implementation
+    return {
+        'auto_filter': True,
+        'file_secure': False,
+        'auto_delete': True,
+        'spell_check': True
+    }
+
+# Add this filter to the available filters list
+__filter_info__ = {
+    'name': 'auto_filter',
+    'description': 'Automatic K-Drama content filtering and search',
+    'version': '1.0.0',
+    'handlers': [
+        'give_filter',
+        'next_page', 
+        'send_file',
+        'close_data'
+    ]
+}

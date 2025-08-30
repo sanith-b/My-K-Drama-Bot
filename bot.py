@@ -93,6 +93,21 @@ async def SilentXBotz_start():
     await app.setup()
     bind_address = "0.0.0.0"
     await web.TCPSite(app, bind_address, PORT).start()
+    async def SilentXBotz_start():
+    # ... existing code ...
+    
+    app = web.AppRunner(await web_server())
+    await app.setup()
+    bind_address = "0.0.0.0"
+    await web.TCPSite(app, bind_address, PORT).start()
+    
+    # Add this for cleanup (optional)
+    try:
+        from plugins.pm_filter import cleanup_pm_filter
+        SilentX.add_handler(pyrogram.handlers.DisconnectHandler(cleanup_pm_filter))
+    except ImportError:
+        pass  # pm_filter package not found or doesn't have cleanup
+    
     await idle()
     
 if __name__ == '__main__':

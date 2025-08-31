@@ -1984,28 +1984,56 @@ async def advantage_spell_chok(client, message):
     """
     Main movie search handler with enhanced UX
     """
+    # Initialize default values first
+    user_id = 0
+    user_mention = "User"
+    search = ""
+    chat_id = 0
+    
     try:
-        mv_id = message.id
-        search = message.text.strip()
-        chat_id = message.chat.id
+        # Safely get message attributes
+        mv_id = getattr(message, 'id', 0)
+        search = getattr(message, 'text', '').strip()
+        chat_id = getattr(message, 'chat', {})
         
-        # Safe user handling - check if from_user exists and has required attributes
-        user = getattr(message, 'from_user', None)
-        if user and hasattr(user, 'mention'):
-            user_mention = user.mention
-            user_id = getattr(user, 'id', 0)
-        elif user and hasattr(user, 'id'):
-            user_id = user.id
-            user_mention = f"@{getattr(user, 'username', 'User')}" if hasattr(user, 'username') else "User"
+        # Handle chat_id if it's an object
+        if hasattr(chat_id, 'id'):
+            chat_id = chat_id.id
+        elif isinstance(chat_id, dict):
+            chat_id = chat_id.get('id', 0)
         else:
-            user_id = 0
-            user_mention = "User"
+            chat_id = 0
         
-        # Rate limiting check (moved after user_id is defined)
+        # Safe user handling with extensive checks
+        user = getattr(message, 'from_user', None)
+        
+        if user:
+            # Check if user is a proper object or just a string/number
+            if hasattr(user, 'mention') and callable(getattr(user, 'mention', None)):
+                try:
+                    user_mention = user.mention
+                except:
+                    user_mention = "User"
+            elif hasattr(user, 'mention') and isinstance(user.mention, str):
+                user_mention = user.mention
+            elif hasattr(user, 'first_name'):
+                user_mention = user.first_name
+            elif hasattr(user, 'username'):
+                user_mention = f"@{user.username}"
+            
+            # Get user ID safely
+            if hasattr(user, 'id'):
+                try:
+                    user_id = int(user.id)
+                except (ValueError, TypeError):
+                    user_id = 0
+        
+        logger.info(f"Processing message - User: {user_id}, Chat: {chat_id}, Search: '{search}'")
+        
+        # Rate limiting check
         if not rate_limiter.is_allowed(user_id):
             rate_msg = await message.reply(
-                "⏳ *Please wait a moment*\n\nToo many searches! Try again in a few seconds.",
-                parse_mode='Markdown'
+                "⏳ *Please wait a moment*\n\nToo many searches! Try again in a few seconds."
             )
             await asyncio.sleep(10)
             await _safe_delete(rate_msg)
@@ -2221,8 +2249,3 @@ async def log_search_stats(user_id: int, search_term: str, result_count: int, su
 
 # Example of how to add to your bot
 # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, advantage_spell_chok))
-# application.add_handler(CallbackQueryHandler(handle_movie_callback))
-
-# Example of how to add to your bot
-# application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, advantage_spell_chok))
-# application.add_handler(CallbackQueryHandler(handle_movie_callback))

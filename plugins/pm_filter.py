@@ -35,7 +35,13 @@ BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
 
-
+class Config:
+    DEFAULT_PAGE_SIZE = 10
+    MAX_PAGE_SIZE = 50
+    TIMEZONE = 'Asia/Kolkata'
+    CACHE_EXPIRY_HOURS = 24
+    MAX_FILENAME_LENGTH = 40
+	
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client, message):
     bot_id = client.me.id

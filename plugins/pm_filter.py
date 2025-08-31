@@ -1986,7 +1986,6 @@ async def advantage_spell_chok(client, message):
     """
     try:
         # Rate limiting check
-        user_id = message.from_user.id if message.from_user else 0
         if not rate_limiter.is_allowed(user_id):
             rate_msg = await message.reply(
                 "⏳ *Please wait a moment*\n\nToo many searches! Try again in a few seconds.",
@@ -1999,7 +1998,18 @@ async def advantage_spell_chok(client, message):
         mv_id = message.id
         search = message.text.strip()
         chat_id = message.chat.id
-        user_mention = message.from_user.mention if message.from_user else "User"
+        
+        # Safe user handling - check if from_user exists and has required attributes
+        user = getattr(message, 'from_user', None)
+        if user and hasattr(user, 'mention'):
+            user_mention = user.mention
+            user_id = getattr(user, 'id', 0)
+        elif user and hasattr(user, 'id'):
+            user_id = user.id
+            user_mention = f"@{getattr(user, 'username', 'User')}" if hasattr(user, 'username') else "User"
+        else:
+            user_id = 0
+            user_mention = "User"
         
         # Validate input
         if len(search) < 2:

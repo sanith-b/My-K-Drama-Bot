@@ -26,17 +26,7 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from typing import List, Optional
-import logging
 
-SIMILARITY_THRESHOLD = 85
-MAX_SEARCH_ATTEMPTS = 5
-MESSAGE_TIMEOUT = 90
-MAX_MOVIE_RESULTS = 10
-
-# Set up logging
-logger = logging.getLogger(__name__)
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"
@@ -421,6 +411,154 @@ async def filter_qualities_cb_handler(client: Client, query: CallbackQuery):
     except Exception as e:
         LOGGER.error(f"Error In Quality - {e}")
 
+
+@Client.on_callback_query(filters.regex(r"^languages#"))
+async def languages_cb_handler(client: Client, query: CallbackQuery):
+    try:
+        try:
+            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
+                return await query.answer(
+                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
+                    show_alert=True,
+                )
+        except:
+            pass
+        _, key, offset = query.data.split("#")
+        search = FRESH.get(key)
+        search = search.replace(' ', '_')
+        offset = int(offset)
+        btn = []
+        for i in range(0, len(LANGUAGES)-1, 2):
+            btn.append([
+                InlineKeyboardButton(
+                    text=LANGUAGES[i].title(),
+                    callback_data=f"fl#{LANGUAGES[i].lower()}#{key}#{offset}"
+                ),
+                InlineKeyboardButton(
+                    text=LANGUAGES[i+1].title(),
+                    callback_data=f"fl#{LANGUAGES[i+1].lower()}#{key}#{offset}"
+                ),
+            ])
+        btn.insert(
+            0,
+            [
+                InlineKeyboardButton(
+                    text="⇊ ꜱᴇʟᴇᴄᴛ ʟᴀɴɢᴜᴀɢᴇ ⇊", callback_data="ident"
+                )
+            ],
+        )
+        req = query.from_user.id
+        offset = 0
+        btn.append([InlineKeyboardButton(text="📂 Back to Files 📂", callback_data=f"fl#homepage#{key}#{offset}")])
+        await query.edit_message_reply_markup(InlineKeyboardMarkup(btn))
+    except Exception as e:
+        LOGGER.error(f"Error In Language Cb Handaler - {e}")
+    
+
+@Client.on_callback_query(filters.regex(r"^fl#"))
+async def filter_languages_cb_handler(client: Client, query: CallbackQuery):
+    try:
+        _, lang, key, offset = query.data.split("#")
+        offset = int(offset)
+        curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+        search = FRESH.get(key)
+        search = search.replace("_", " ")
+        baal = lang in search
+        if baal:
+            search = search.replace(lang, "")
+        else:
+            search = search
+        req = query.from_user.id
+        chat_id = query.message.chat.id
+        message = query.message
+        try:
+            if int(query.from_user.id) not in [query.message.reply_to_message.from_user.id, 0]:
+                return await query.answer(
+                    f"⚠️ Hello {query.from_user.first_name}! \n❌ This isn’t your movie request. \n📝 Please send your own request.",
+                    show_alert=True,
+                )
+        except:
+            pass
+        if lang != "homepage":
+            search = f"{search} {lang}"
+        BUTTONS[key] = search
+        files, n_offset, total_results = await get_search_results(chat_id, search, offset=offset, filter=True)
+        if not files:
+            await query.answer("⚡ Sorry, nothing was found!", show_alert=1)
+            return
+        temp.GETALL[key] = files
+        settings = await get_settings(message.chat.id)
+        if settings.get('button'):
+            btn = [
+                [
+                    InlineKeyboardButton(
+                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
+                    ),
+                ]
+                for file in files
+            ]
+            btn.insert(0, 
+                [
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+            
+            ])
+        else:
+            btn = []
+            btn.insert(0, 
+                [
+                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                        InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
+                ]
+            )
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")            
+            ])
+        if n_offset != "":
+            try:
+                if settings['max_btn']:
+                    btn.append(
+                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                    )
+    
+                else:
+                    btn.append(
+                        [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                    )
+            except KeyError:
+                await save_group_settings(query.message.chat.id, 'max_btn', True)
+                btn.append(
+                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{n_offset}")]
+                )
+        else:
+            n_offset = 0
+            btn.append(
+                [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
+            )    
+
+        if not settings.get('button'):
+            cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+            time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
+            remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
+            cap = await get_cap(settings, remaining_seconds, files, query, total_results, search, offset)
+            try:
+                await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+            except MessageNotModified:
+                pass
+        else:
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(btn)
+                )
+            except MessageNotModified:
+                pass
+        await query.answer()
+    except Exception as e:
+        LOGGER.error(f"Error In Language - {e}")
         
 @Client.on_callback_query(filters.regex(r"^seasons#"))
 async def season_cb_handler(client: Client, query: CallbackQuery):
@@ -820,6 +958,337 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 parse_mode=enums.ParseMode.HTML,
                 reply_to_message_id=query.message.id
             )
+
+    elif query.data.startswith("show_option"):
+        ident, from_user = query.data.split("#")
+        btn = [[
+                InlineKeyboardButton("• ᴜɴᴀᴠᴀɪʟᴀʙʟᴇ •", callback_data=f"unavailable#{from_user}"),
+                InlineKeyboardButton("• ᴜᴘʟᴏᴀᴅᴇᴅ •", callback_data=f"uploaded#{from_user}")
+             ],[
+                InlineKeyboardButton("• ᴀʟʀᴇᴀᴅʏ ᴀᴠᴀɪʟᴀʙʟᴇ •", callback_data=f"already_available#{from_user}")
+             ],[
+                InlineKeyboardButton("• ɴᴏᴛ ʀᴇʟᴇᴀꜱᴇᴅ •", callback_data=f"Not_Released#{from_user}"),
+                InlineKeyboardButton("• Type Correct Spelling •", callback_data=f"Type_Correct_Spelling#{from_user}")
+             ],[
+                InlineKeyboardButton("• Not Available In The Hindi •", callback_data=f"Not_Available_In_The_Hindi#{from_user}")
+             ]]
+        btn2 = [[
+                 InlineKeyboardButton("📊 View Status", url=f"{query.message.link}")
+               ]]
+        if query.from_user.id in ADMINS:
+            user = await client.get_users(from_user)
+            reply_markup = InlineKeyboardMarkup(btn)
+            await query.message.edit_reply_markup(reply_markup)
+            await query.answer("Hᴇʀᴇ ᴀʀᴇ ᴛʜᴇ ᴏᴘᴛɪᴏɴs !")
+        else:
+            await query.answer("❌ You don’t have enough rights to do this!", show_alert=True)
+        
+    elif query.data.startswith("unavailable"):
+        ident, from_user = query.data.split("#")
+        btn = [
+            [InlineKeyboardButton("• ᴜɴᴀᴠᴀɪʟᴀʙʟᴇ •", callback_data=f"unalert#{from_user}")]
+        ]
+        btn2 = [
+            [InlineKeyboardButton('📢 Join Channel', url=link.invite_link),
+            InlineKeyboardButton("📊 View Status", url=f"{query.message.link}")]
+        ]
+        if query.from_user.id in ADMINS:
+            user = await client.get_users(from_user)
+            reply_markup = InlineKeyboardMarkup(btn)
+            content = query.message.text
+            await query.message.edit_text(f"<b><strike>{content}</strike></b>")
+            await query.message.edit_reply_markup(reply_markup)
+            await query.answer("Sᴇᴛ ᴛᴏ Uɴᴀᴠᴀɪʟᴀʙʟᴇ !")
+            content = extract_request_content(query.message.text)
+            try:
+                await client.send_message(
+                    chat_id=int(from_user),
+                    text=f"<b>✨ Hello! {user.mention},</b>\n\n<u>{content}</u> Hᴀs Bᴇᴇɴ Mᴀʀᴋᴇᴅ Aᴅ ᴜɴᴀᴠᴀɪʟᴀʙʟᴇ...💔\n\n#Uɴᴀᴠᴀɪʟᴀʙʟᴇ ⚠️",
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+            except UserIsBlocked:
+                await client.send_message(
+                    chat_id=int(SUPPORT_CHAT_ID),
+                    text=f"<b>✨ Hello! {user.mention},</b>\n\n<u>{content}</u> Hᴀs Bᴇᴇɴ Mᴀʀᴋᴇᴅ Aᴅ ᴜɴᴀᴠᴀɪʟᴀʙʟᴇ...💔\n\n#Uɴᴀᴠᴀɪʟᴀʙʟᴇ ⚠️\n\n<small>🚫 Blocked? Unblock the bot to get messages! 🔓</small></b>",
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+   
+    elif query.data.startswith("Not_Released"):
+        ident, from_user = query.data.split("#")
+        btn = [[InlineKeyboardButton("📌 Not Released 📌", callback_data=f"nralert#{from_user}")]]
+        btn2 = [[
+            InlineKeyboardButton('📢 Join Channel', url=link.invite_link),
+            InlineKeyboardButton("📊 View Status", url=f"{query.message.link}")
+        ]]
+        if query.from_user.id in ADMINS:
+            user = await client.get_users(from_user)
+            reply_markup = InlineKeyboardMarkup(btn)
+            content = query.message.text
+            await query.message.edit_text(f"<b><strike>{content}</strike></b>")
+            await query.message.edit_reply_markup(reply_markup)
+            await query.answer("Sᴇᴛ ᴛᴏ Nᴏᴛ Rᴇʟᴇᴀꜱᴇᴅ !")
+            content = extract_request_content(query.message.text)
+            try:
+                await client.send_message(
+                    chat_id=int(from_user),
+                    text=(
+                        f"<b>✨ Hello! {user.mention}\n\n"
+                        f"<code>{content}</code>, Oops! Your request is still pending 🕊️\n\n"
+                        f"Stay tuned… #ComingSoon ✨</b>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+            except UserIsBlocked:
+                await client.send_message(
+                    chat_id=int(SUPPORT_CHAT_ID),
+                    text=(
+                        f"<u>✨ Hello! {user.mention}</u>\n\n"
+                        f"<b><code>{content}</code>, Oops! Your request is still pending 🕊️\n\n"
+                        f"Stay tuned… #ComingSoon ✨\n\n"
+                        f"<small>🚫 Blocked? Unblock the bot to get messages! 🔓</small></b>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+        else:
+            await query.answer("❌ You don’t have enough rights to do this!", show_alert=True)
+
+    elif query.data.startswith("Type_Correct_Spelling"):
+        ident, from_user = query.data.split("#")
+        btn = [[
+                InlineKeyboardButton("✏️ Enter Correct Spelling", callback_data=f"wsalert#{from_user}")
+              ]]
+        btn2 = [[
+                 InlineKeyboardButton('📢 Join Channel', url=link.invite_link),
+                 InlineKeyboardButton("📊 View Status", url=f"{query.message.link}")
+               ]]
+        if query.from_user.id in ADMINS:
+            user = await client.get_users(from_user)
+            reply_markup = InlineKeyboardMarkup(btn)
+            content = query.message.text
+            await query.message.edit_text(f"<b><strike>{content}</strike></b>")
+            await query.message.edit_reply_markup(reply_markup)
+            await query.answer("✅ Spellcheck Enabled!")
+            content = extract_request_content(query.message.text)
+            try:
+                await client.send_message(
+                    chat_id=int(from_user),
+                    text=(
+                        f"<b>✨ Hello! {user.mention}\n\n"
+                        f"❌ Request Declined: <code>{content}</code> \n📝 Reason: Spelling error 😢✍️\n\n"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+            except UserIsBlocked:
+                await client.send_message(
+                    chat_id=int(SUPPORT_CHAT_ID),
+                    text=(
+                        f"<u>✨ Hello! {user.mention}</u>\n\n"
+                        f"<b><code>{content}</code>, Wrong spelling detected!😢\n\n"
+                        f"⚠️ #Wrong_Spelling\n\n"
+                        f"<small>🚫 Blocked? Unblock the bot to get messages! 🔓</small></b>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+        else:
+            await query.answer("❌ You don’t have enough rights to do this!", show_alert=True)
+
+    elif query.data.startswith("Not_Available_In_The_Hindi"):
+        ident, from_user = query.data.split("#")
+        btn = [[
+                InlineKeyboardButton(" Not Available In The Hindi ", callback_data=f"hnalert#{from_user}")
+              ]]
+        btn2 = [[
+                 InlineKeyboardButton('📢 Join Channel', url=link.invite_link),
+                 InlineKeyboardButton("📊 View Status", url=f"{query.message.link}")
+               ]]
+        if query.from_user.id in ADMINS:
+            user = await client.get_users(from_user)
+            reply_markup = InlineKeyboardMarkup(btn)
+            content = query.message.text
+            await query.message.edit_text(f"<b><strike>{content}</strike></b>")
+            await query.message.edit_reply_markup(reply_markup)
+            await query.answer("Sᴇᴛ ᴛᴏ Nᴏᴛ Aᴠᴀɪʟᴀʙʟᴇ Iɴ Hɪɴᴅɪ !")
+            content = extract_request_content(query.message.text)
+            try:
+                await client.send_message(
+                    chat_id=int(from_user),
+                    text=(
+                        f"<b>✨ Hello! {user.mention}\n\n"
+                        f"Yᴏᴜʀ Rᴇǫᴜᴇsᴛ <code>{content}</code> ɪs Nᴏᴛ Aᴠᴀɪʟᴀʙʟᴇ ɪɴ Hɪɴᴅɪ ʀɪɢʜᴛ ɴᴏᴡ. Sᴏ ᴏᴜʀ ᴍᴏᴅᴇʀᴀᴛᴏʀs ᴄᴀɴ'ᴛ ᴜᴘʟᴏᴀᴅ ɪᴛ\n\n"
+                        f"#Hɪɴᴅɪ_ɴᴏᴛ_ᴀᴠᴀɪʟᴀʙʟᴇ ❌</b>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+            except UserIsBlocked:
+                await client.send_message(
+                    chat_id=int(SUPPORT_CHAT_ID),
+                    text=(
+                        f"<u>✨ Hello! {user.mention}</u>\n\n"
+                        f"<b><code>{content}</code> ɪs Nᴏᴛ Aᴠᴀɪʟᴀʙʟᴇ ɪɴ Hɪɴᴅɪ ʀɪɢʜᴛ ɴᴏᴡ. Sᴏ ᴏᴜʀ ᴍᴏᴅᴇʀᴀᴛᴏʀs ᴄᴀɴ'ᴛ ᴜᴘʟᴏᴀᴅ ɪᴛ\n\n"
+                        f"#Hɪɴᴅɪ_ɴᴏᴛ_ᴀᴠᴀɪʟᴀʙʟᴇ ❌\n\n"
+                        f"<small>🚫 Blocked? Unblock the bot to get messages! 🔓</small></b>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+        else:
+            await query.answer("❌ You don’t have enough rights to do this!", show_alert=True)
+
+    elif query.data.startswith("uploaded"):
+        ident, from_user = query.data.split("#")
+        btn = [[
+                InlineKeyboardButton("• ᴜᴘʟᴏᴀᴅᴇᴅ •", callback_data=f"upalert#{from_user}")
+              ]]
+        btn2 = [[
+                 InlineKeyboardButton('📢 Join Channel', url=link.invite_link),
+                 InlineKeyboardButton("📊 View Status", url=f"{query.message.link}")
+               ],[
+                 InlineKeyboardButton("Search Here 🔎", url=GRP_LNK)
+               ]]
+        if query.from_user.id in ADMINS:
+            user = await client.get_users(from_user)
+            reply_markup = InlineKeyboardMarkup(btn)
+            content = query.message.text
+            await query.message.edit_text(f"<b><strike>{content}</strike></b>")
+            await query.message.edit_reply_markup(reply_markup)
+            await query.answer("Sᴇᴛ ᴛᴏ Uᴘʟᴏᴀᴅᴇᴅ !")
+            content = extract_request_content(query.message.text)
+            try:
+                await client.send_message(
+                    chat_id=int(from_user),
+                    text=(
+                        f"<b>✨ Hello! {user.mention},\n\n"
+                        f"<u>{content}</u> ✅ Your request has been uploaded by our moderators!\n"
+                        f"💡 Kindly look in the group first.</b>\n\n"
+                        f"#Uploaded ✅"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+            except UserIsBlocked:
+                await client.send_message(
+                    chat_id=int(SUPPORT_CHAT_ID),
+                    text=(
+                        f"<u>{content}</u>\n\n"
+                        f"<b>✨ Hello! {user.mention}, ✅ Your request has been uploaded by our moderators!"
+                        f"💡 Kindly look in the group first.</b>\n\n"
+                        f"#Uploaded ✅\n\n"
+                        f"<small>🚫 Blocked? Unblock the bot to get messages! 🔓</small>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+        else:
+            await query.answer("❌ You don’t have enough rights to do this!", show_alert=True)
+
+    elif query.data.startswith("already_available"):
+        ident, from_user = query.data.split("#")
+        btn = [[
+                InlineKeyboardButton("• ᴀʟʀᴇᴀᴅʏ ᴀᴠᴀɪʟᴀʙʟᴇ •", callback_data=f"alalert#{from_user}")
+              ]]
+        btn2 = [[
+                 InlineKeyboardButton('📢 Join Channel', url=link.invite_link),
+                 InlineKeyboardButton("📊 View Status", url=f"{query.message.link}")
+               ],[
+                 InlineKeyboardButton("Search Here 🔎", url=GRP_LNK)
+               ]]
+        if query.from_user.id in ADMINS:
+            user = await client.get_users(from_user)
+            reply_markup = InlineKeyboardMarkup(btn)
+            content = query.message.text
+            await query.message.edit_text(f"<b><strike>{content}</strike></b>")
+            await query.message.edit_reply_markup(reply_markup)
+            await query.answer("Set successfully to Available!")
+            content = extract_request_content(query.message.text)
+            try:
+                await client.send_message(
+                    chat_id=int(from_user),
+                    text=(
+                        f"<b>✨ Hello! {user.mention},\n\n"
+                        f"<u>{content}</u> ✅ This request is already in our bot’s database!\n"
+                        f"💡 Kindly look in the group first.</b>\n\n"
+                        f"🚀 Available Now!"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+            except UserIsBlocked:
+                await client.send_message(
+                    chat_id=int(SUPPORT_CHAT_ID),
+                    text=(
+                        f"<b>✨ Hello! {user.mention},\n\n"
+                        f"<u>{content}</u> ✅ This request is already in our bot’s database!\n"
+                        f"💡 Kindly look in the group first.</b>\n\n"
+                        f"🚀 Available Now!\n"
+                        f"<small>🚫 Blocked? Unblock the bot to get messages! 🔓</small></i>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn2)
+                )
+        else:
+            await query.answer("❌ You don’t have enough rights to do this!", show_alert=True)
+            
+    
+    elif query.data.startswith("alalert"):
+        ident, from_user = query.data.split("#")
+        if int(query.from_user.id) == int(from_user):
+            user = await client.get_users(from_user)
+            await query.answer(
+                f"✨ Hello! {user.first_name}, 🚀 Already uploaded – request exists!",
+                show_alert=True
+            )
+        else:
+            await query.answer("❌ Insufficient rights to perform this action!", show_alert=True)
+
+    elif query.data.startswith("upalert"):
+        ident, from_user = query.data.split("#")
+        if int(query.from_user.id) == int(from_user):
+            user = await client.get_users(from_user)
+            await query.answer(
+                f"✨ Hello! {user.first_name}, 🔼 Your request has been uploaded!",
+                show_alert=True
+            )
+        else:
+            await query.answer("❌ Insufficient rights to perform this action!", show_alert=True)
+
+    elif query.data.startswith("unalert"):
+        ident, from_user = query.data.split("#")
+        if int(query.from_user.id) == int(from_user):
+            user = await client.get_users(from_user)
+            await query.answer(
+                f"✨ Hello! {user.first_name}, Oops! This request isn’t available right now.⚠️",
+                show_alert=True
+            )
+        else:
+            await query.answer("❌ Insufficient rights to perform this action!", show_alert=True)
+
+    elif query.data.startswith("hnalert"):
+        ident, from_user = query.data.split("#")  # Hindi Not Available
+        if int(query.from_user.id) == int(from_user):
+            user = await client.get_users(from_user)
+            await query.answer(
+                f"✨ Hello! {user.first_name}, ❌ Not available",
+                show_alert=True
+            )
+        else:
+            await query.answer("🚫 Permission denied – must be original requester", show_alert=True)
+
+    elif query.data.startswith("nralert"):
+        ident, from_user = query.data.split("#")  # Not Released
+        if int(query.from_user.id) == int(from_user):
+            user = await client.get_users(from_user)
+            await query.answer(
+                f"✨ Hello! {user.first_name}, 🚫 Not released yet – stay tuned!",
+                show_alert=True
+            )
+        else:
+            await query.answer("❌ Action denied – youre not the original requester!", show_alert=True)
+
+    elif query.data.startswith("wsalert"):
+        ident, from_user = query.data.split("#")  # Wrong Spelling
+        if int(query.from_user.id) == int(from_user):
+            user = await client.get_users(from_user)
+            await query.answer(
+                f"✨ Hello! {user.first_name}, ❗ Request rejected – check your spelling!",
+                show_alert=True
+            )
+        else:
+            await query.answer("❌ You don’t have permission to view this!", show_alert=True)
 
     
     elif lazyData.startswith("streamfile"):
@@ -1427,198 +1896,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
     await query.answer(MSG_ALRT)
 
     
-async def auto_filter(client, msg, spoll=False):
-    curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-    if not spoll:
-        message = msg
-        if message.text.startswith("/"): return
-        if re.findall("((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
-            return
-        if len(message.text) < 100:
-            search = await replace_words(message.text)		
-            search = search.lower()
-            search = search.replace("-", " ")
-            search = search.replace(":","")
-            search = re.sub(r'\s+', ' ', search).strip()
-            m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query : <i>{search}...</i></b>', reply_to_message_id=message.id)
-            files, offset, total_results = await get_search_results(message.chat.id ,search, offset=0, filter=True)
-            settings = await get_settings(message.chat.id)
-            if not files:
-                if settings["spell_check"]:
-                    ai_sts = await m.edit('🤖 Hang tight… AI is checking your spelling!')
-                    is_misspelled = await ai_spell_check(chat_id = message.chat.id,wrong_name=search)
-                    if is_misspelled:
-                        await ai_sts.edit(f'<b>🔹 My pick<code> {is_misspelled}</code> \nOn the search for <code>{is_misspelled}</code></b>')
-                        await asyncio.sleep(2)
-                        message.text = is_misspelled
-                        await ai_sts.delete()
-                        return await auto_filter(client, message)
-                    await ai_sts.delete()
-                    return await advantage_spell_chok(client, message)
-        else:
-            return
-    else:
-        message = msg.message.reply_to_message
-        search, files, offset, total_results = spoll
-        m=await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query :<i>{search}...</i></b>', reply_to_message_id=message.id)
-        settings = await get_settings(message.chat.id)
-        await msg.message.delete()
-    key = f"{message.chat.id}-{message.id}"
-    FRESH[key] = search
-    temp.GETALL[key] = files
-    temp.SHORT[message.from_user.id] = message.chat.id
-    if settings.get('button'):
-        btn = [
-            [
-                InlineKeyboardButton(
-                    text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
-                ),
-            ]
-            for file in files
-        ]
-        btn.insert(0, 
-            [
-                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-            ]
-        )
-        btn.insert(1, [
-            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-            
-        ])
-    else:
-        btn = []
-        btn.insert(0, 
-            [
-                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-            ]
-        )
-        btn.insert(1, [
-            InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-            
-        ])
-    if offset != "":
-        req = message.from_user.id if message.from_user else 0
-        try:
-            if settings['max_btn']:
-                btn.append(
-                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
-                )
-            else:
-                btn.append(
-                    [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/int(MAX_B_TN))}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
-                )
-        except KeyError:
-            await save_group_settings(message.chat.id, 'max_btn', True)
-            btn.append(
-                [InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(text=f"1/{math.ceil(int(total_results)/10)}",callback_data="pages"), InlineKeyboardButton(text="➡️ Next",callback_data=f"next_{req}_{key}_{offset}")]
-            )
-    else:
-        btn.append(
-            [InlineKeyboardButton(text="🚫 That’s everything!",callback_data="pages")]
-        )
-    imdb = await get_poster(search, file=(files[0]).file_name) if settings["imdb"] else None
-    cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-    time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
-    remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
-    TEMPLATE = script.IMDB_TEMPLATE_TXT
-    if imdb:
-        cap = TEMPLATE.format(
-            qurey=search,
-            title=imdb['title'],
-            votes=imdb['votes'],
-            aka=imdb["aka"],
-            seasons=imdb["seasons"],
-            box_office=imdb['box_office'],
-            localized_title=imdb['localized_title'],
-            kind=imdb['kind'],
-            imdb_id=imdb["imdb_id"],
-            cast=imdb["cast"],
-            runtime=imdb["runtime"],
-            countries=imdb["countries"],
-            certificates=imdb["certificates"],
-            languages=imdb["languages"],
-            director=imdb["director"],
-            writer=imdb["writer"],
-            producer=imdb["producer"],
-            composer=imdb["composer"],
-            cinematographer=imdb["cinematographer"],
-            music_team=imdb["music_team"],
-            distributors=imdb["distributors"],
-            release_date=imdb['release_date'],
-            year=imdb['year'],
-            genres=imdb['genres'],
-            poster=imdb['poster'],
-            plot=imdb['plot'],
-            rating=imdb['rating'],
-            url=imdb['url'],
-            **locals()
-        )
-        temp.IMDB_CAP[message.from_user.id] = cap
-        if not settings.get('button'):
-            for file_num, file in enumerate(files, start=1):
-                cap += f"\n\n<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}</a></b>"
-    else:
-        if settings.get('button'):
-            cap =f"<b><blockquote>Hey!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"
-        else:
-            cap =f"<b><blockquote>✨ Hello!,{message.from_user.mention}</blockquote>\n\n📂 Voilà! Your result: <code>{search}</code></b>\n\n"            
-            for file_num, file in enumerate(files, start=1):
-                cap += f"<b>{file_num}. <a href='https://telegram.me/{temp.U_NAME}?start=file_{message.chat.id}_{file.file_id}'>{get_size(file.file_size)} | {clean_filename(file.file_name)}\n\n</a></b>"                
-    if imdb and imdb.get('poster'):
-        try:
-            hehe = await m.edit_photo(photo=imdb.get('poster'), caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
-            try:
-                if settings['auto_delete']:
-                    await asyncio.sleep(DELETE_TIME)
-                    await hehe.delete()
-                    await message.delete()
-            except KeyError:
-                await save_group_settings(message.chat.id, 'auto_delete', True)
-                await asyncio.sleep(DELETE_TIME)
-                await hehe.delete()
-                await message.delete()
-        except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
-            pic = imdb.get('poster')
-            poster = pic.replace('.jpg', "._V1_UX360.jpg") 
-            hmm = await m.edit_photo(photo=poster, caption=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
-            try:
-               if settings['auto_delete']:
-                    await asyncio.sleep(DELETE_TIME)
-                    await hmm.delete()
-                    await message.delete()
-            except KeyError:
-                await save_group_settings(message.chat.id, 'auto_delete', True)
-                await asyncio.sleep(DELETE_TIME)
-                await hmm.delete()
-                await message.delete()
-        except Exception as e:
-            LOGGER.error(e)
-            fek = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
-            try:
-                if settings['auto_delete']:
-                    await asyncio.sleep(DELETE_TIME)
-                    await fek.delete()
-                    await message.delete()
-            except KeyError:
-                await save_group_settings(message.chat.id, 'auto_delete', True)
-                await asyncio.sleep(DELETE_TIME)
-                await fek.delete()
-                await message.delete()
-    else:
-        fuk = await m.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
-        try:
-            if settings['auto_delete']:
-                await asyncio.sleep(DELETE_TIME)
-                await fuk.delete()
-                await message.delete()
-        except KeyError:
-            await save_group_settings(message.chat.id, 'auto_delete', True)
-            await asyncio.sleep(DELETE_TIME)
-            await fuk.delete()
-            await message.delete()
-			
 async def auto_filter(client, msg, spoll=False):
     curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
     if not spoll:

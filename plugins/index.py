@@ -1,4 +1,211 @@
-import time
+for batch in range(batches):
+                if temp.CANCEL:
+                    await msg.edit(
+                        f"🛑 **Indexing Cancelled**\n\n"
+                        f"**Channel:** `{chat_title}`\n"
+                        f"**Access:** {access_level}\n"
+                        f"**Progress:** `{current:,}/{total_messages:,}`\n"
+                        f"**Files Saved:** `{total_files:,}`",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('❌ Close', callback_data='close_data')]])
+                    )
+                    break
+                    
+                batch_start = time.time()
+                start_id = current + 1
+                end_id = min(current + BATCH_SIZE, lst_msg_id)
+                message_ids = range(start_id, end_id + 1)
+                
+                try:
+                    # Add delay for member access to avoid rate limits
+                    if not is_bot_admin:
+                        await asyncio.sleep(0.5)  # Small delay for member access
+                    
+                    messages = await bot.get_messages(chat, list(message_ids))
+                    if not isinstance(messages, list):
+                        messages = [messages]
+                        
+                except FloodWait as e:
+                    # Handle rate limiting especially for member access
+                    LOGGER.warning(f"FloodWait: {e.value} seconds")
+                    await asyncio.sleep(e.value)
+                    try:
+                        messages = await bot.get_messages(chat, list(message_ids))
+                        if not isinstance(messages, list):
+                            messages = [messages]
+                    except Exception as retry_e:
+                        LOGGER.error(f"Retry failed after FloodWait: {retry_e}")
+                        errors += len(message_ids)
+                        current += len(message_ids)
+                        continue
+                        
+                except Exception as e:
+                    LOGGER.error(f"Error fetching messages batch {batch}: {e}")
+                    errors += len(message_ids)
+                    current += len(message_ids)
+                    
+                    # For member access, try smaller batches if large batch fails
+                    if not is_bot_admin and len(message_ids) > 50:
+                        LOGGER.info("Trying smaller batch size for member access")
+                        try:
+                            for small_batch_start in range(start_id, end_id + 1, 25):
+                                small_batch_end = min(small_batch_start + 24, end_id)
+                                small_message_ids = list(range(small_batch_start, small_batch_end + 1))
+                                try:
+                                    await asyncio.sleep(0.3)  # Extra delay for small batches
+                                    small_messages = await bot.get_messages(chat, small_message_ids)
+                                    if not isinstance(small_messages, list):
+                                        small_messages = [small_messages]
+                                    
+                                    # Process small batch
+                                    save_tasks = []
+                                    for message in small_messages:
+                                        current += 1
+                                        try:
+                                            if message.empty:
+                                                deleted += 1
+                                                continue
+                                            elif not message.media:
+                                                no_media += 1
+                                                continue
+                                            elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO, enums.MessageMediaType.DOCUMENT]:
+                                                unsupported += 1
+                                                continue
+                                            
+                                            media = getattr(message, message.media.value, None)
+                                            if not media:
+                                                unsupported += 1
+                                                continue
+                                                
+                                            media.file_type = message.media.value
+                                            media.caption = message.caption
+                                            save_tasks.append(save_file(media))
+
+                                        except Exception as proc_e:
+                                            LOGGER.error(f"Error processing message {current}: {proc_e}")
+                                            errors += 1
+                                            continue
+                                    
+                                    # Execute save tasks for small batch
+                                    if save_tasks:
+                                        results = await asyncio.gather(*save_tasks, return_exceptions=True)
+                                        for result in results:
+                                            if isinstance(result, Exception):
+                                                errors += 1
+                                            else:
+                                                ok, code = result
+                                                if ok:
+                                                    total_files += 1
+                                                elif code == 0:
+                                                    duplicate += 1
+                                                elif code == 2:
+                                                    errors += 1
+                                                    
+                                except Exception as small_e:
+                                    LOGGER.error(f"Small batch error: {small_e}")
+                                    errors += len(small_message_ids)
+                                    current += len(small_message_ids)
+                                    continue
+                        except Exception as retry_e:
+                            LOGGER.error(f"Failed to process with smaller batches: {retry_e}")
+                    continue
+
+                # Process messages normally if no errors occurred
+                save_tasks = []
+                for message in messages:
+                    current += 1
+                    try:
+                        if message.empty:
+                            deleted += 1
+                            continue
+                        elif not message.media:
+                            no_media += 1
+                            continue
+                        elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO, enums.MessageMediaType.DOCUMENT]:
+                            unsupported += 1
+                            continue
+                        
+                        media = getattr(message, message.media.value, None)
+                        if not media:
+                            unsupported += 1
+                            continue
+                            
+                        media.file_type = message.media.value
+                        media.caption = message.caption
+                        save_tasks.append(save_file(media))
+
+                    except Exception as e:
+                        LOGGER.error(f"Error processing message {current}: {e}")
+                        errors += 1
+                        continue
+
+                # Execute save tasks for normal batch
+                if save_tasks:
+                    results = await asyncio.gather(*save_tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, Exception):
+                            errors += 1
+                        else:
+                            ok, code = result
+                            if ok:
+                                total_files += 1
+                            elif code == 0:
+                                duplicate += 1
+                            elif code == 2:
+                                errors += 1
+
+                # Update progress with access level information
+                batch_time = time.time() - batch_start
+                batch_times.append(batch_time)
+                elapsed = time.time() - start_time
+                progress = current - temp.CURRENT
+                percentage = (progress / total_fetch) * 100 if total_fetch > 0 else 100
+                avg_batch_time = sum(batch_times) / len(batch_times) if batch_times else 1
+                eta = (total_fetch - progress) / BATCH_SIZE * avg_batch_time if progress < total_fetch else 0
+                progress_bar = get_progress_bar(min(int(percentage), 100))
+
+                await msg.edit(
+                    f"⚡ **Indexing in Progress**\n\n"
+                    f"**Channel:** `{chat_title}` ({channel_type_display})\n"
+                    f"**Access Level:** {access_level}\n"
+                    f"**Batch:** `{batch + 1}/{batches}`\n\n"
+                    f"{progress_bar} `{percentage:.1f}%`\n\n"
+                    f"📊 **Statistics:**\n"
+                    f"• **Total Messages:** `{total_messages:,}`\n"
+                    f"• **Processed:** `{current:,}`\n"
+                    f"• **Files Saved:** `{total_files:,}`\n"
+                    f"• **Duplicates:** `{duplicate:,}`\n"
+                    f"• **Deleted:** `{deleted:,}`\n"
+                    f"• **Non-Media:** `{no_media + unsupported:,}`\n"
+                    f"• **Errors:** `{errors:,}`\n\n"
+                    f"⏱️ **Time:**\n"
+                    f"• **Elapsed:** `{get_readable_time(elapsed)}`\n"
+                    f"• **ETA:** `{get_readable_time(eta) if eta > 0 else 'Calculating...'}`",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🛑 Cancel', callback_data='index_cancel')]])
+                )
+
+            # Final summary with access level info
+            elapsed = time.time() - start_time
+            if not temp.CANCEL:
+                success_note = ""
+                if not is_bot_admin:
+                    success_note = "\n\n✨ **Note:** Indexing completed successfully with member access!"
+                
+                await msg.edit(
+                    f"✅ **Indexing Completed Successfully!**\n\n"
+                    f"**Channel:** `{chat_title}` ({channel_type_display})\n"
+                    f"**Access Level:** {access_level}\n\n"
+                    f"📊 **Final Statistics:**\n"
+                    f"• **Total Messages:** `{total_messages:,}`\n"
+                    f"• **Processed:** `{current:,}`\n"
+                    f"• **Files Saved:** `{total_files:,}`\n"
+                    f"• **Duplicates:** `{duplicate:,}`\n"
+                    f"• **Deleted:** `{deleted:,}`\n"
+                    f"• **Non-Media:** `{no_media + unsupported:,}`\n"
+                    f"• **Errors:** `{errors:,}`\n\n"
+                    f"⏰ **Total Time:** `{get_readable_time(elapsed)}`\n"
+                    f"🚀 **Speed:** `{total_files/elapsed:.1f} files/sec`{success_note}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('✅ Close', callback_data='close_data')]])
+                )import time
 import re
 import asyncio
 from pyrogram import Client, filters, enums
@@ -151,12 +358,22 @@ async def process_index_request(bot, message, chat_id, last_msg_id, is_manual=Fa
     """
     source_type = "🔧 Manual Input" if is_manual else ("🔗 Link" if message.text and not message.forward_from_chat else "↩️ Forwarded")
     
-    # Enhanced chat validation with support for restricted channels
+    # Enhanced chat validation with support for non-admin access
     try:
         chat_info = await bot.get_chat(chat_id)
         is_private = chat_info.type == enums.ChatType.CHANNEL and not chat_info.username
         is_restricted = hasattr(chat_info, 'restrictions') and chat_info.restrictions
         chat_title = chat_info.title or "Unknown Channel"
+        
+        # Check bot's admin status
+        bot_member = None
+        is_bot_admin = False
+        try:
+            bot_member = await bot.get_chat_member(chat_id, bot.me.id)
+            is_bot_admin = bot_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]
+        except Exception:
+            # Bot might not be a member or channel might not allow member queries
+            pass
         
         # Check if it's a channel that restricts forwarding
         has_forward_restrictions = False
@@ -171,11 +388,11 @@ async def process_index_request(bot, message, chat_id, last_msg_id, is_manual=Fa
     except ChannelInvalid:
         return await message.reply(
             '❌ **Channel Access Error**\n\n'
-            'This may be a private channel/group.\n'
+            'This may be a private channel/group or the bot is not a member.\n'
             '✅ **Solutions:**\n'
-            '• Make me an admin in the channel\n'
-            '• Ensure I have message access permissions\n'
-            '• For restricted channels, make sure I\'m added properly'
+            '• Add me to the channel (admin preferred but not required)\n'
+            '• For private channels: Make me admin or ensure I\'m a member\n'
+            '• For public channels: I can try to join automatically'
         )
     except (UsernameInvalid, UsernameNotModified):
         return await message.reply(
@@ -190,9 +407,9 @@ async def process_index_request(bot, message, chat_id, last_msg_id, is_manual=Fa
             '❌ **Private Channel Access Denied**\n\n'
             'I don\'t have access to this private channel.\n'
             '✅ **Required:**\n'
-            '• Add me as admin to the channel\n'
-            '• Grant message reading permissions\n'
-            '• For restricted content channels, ensure proper admin rights'
+            '• Add me to the channel (admin preferred)\n'
+            '• For restricted channels: Admin rights may be required\n'
+            '• Ensure the channel allows bots'
         )
     except PeerIdInvalid:
         return await message.reply(
@@ -207,43 +424,69 @@ async def process_index_request(bot, message, chat_id, last_msg_id, is_manual=Fa
         LOGGER.error(f"Error getting chat info: {e}")
         return await message.reply(f'❌ **Error accessing chat:** `{e}`')
     
-    # Test message access with better error handling for restricted channels
+    # Test message access with flexible approach (admin and non-admin)
+    can_access_messages = False
+    access_method = "unknown"
+    
     try:
         test_msg = await bot.get_messages(chat_id, last_msg_id)
-        if test_msg.empty:
-            return await message.reply(
-                '❌ **Message Access Error**\n\n'
-                'Cannot access the specified message.\n'
-                '✅ **Check:**\n'
-                '• I\'m an admin in the channel\n'
-                '• I have "Read Messages" permission\n'
-                '• The message ID exists and is correct\n'
-                '• For restricted channels, I need proper admin rights'
-            )
+        if not test_msg.empty:
+            can_access_messages = True
+            access_method = "admin" if is_bot_admin else "member"
     except Exception as e:
         LOGGER.error(f"Error accessing messages: {e}")
         error_msg = str(e).lower()
-        if "restricted" in error_msg or "forbidden" in error_msg:
+        
+        if "admin" in error_msg and not is_bot_admin:
+            return await message.reply(
+                '❌ **Admin Rights Required**\n\n'
+                'This channel requires admin access for indexing.\n'
+                '✅ **Solutions:**\n'
+                '• Make me an admin in the channel\n'
+                '• Grant "Read Messages" permission\n'
+                '• For restricted channels: Grant "Manage Messages" permission'
+            )
+        elif "restricted" in error_msg or "forbidden" in error_msg:
             return await message.reply(
                 '❌ **Restricted Content Channel**\n\n'
                 'This channel has content restrictions.\n'
-                '✅ **Required permissions:**\n'
+                '✅ **Required for indexing:**\n'
                 '• Add me as admin with full rights\n'
                 '• Grant "Read Messages" permission\n'
                 '• Ensure I can access restricted content\n\n'
                 '💡 **Note:** Some channels require special admin permissions for bots.'
             )
+        elif "member" in error_msg:
+            return await message.reply(
+                '❌ **Not a Channel Member**\n\n'
+                'I need to be added to this channel first.\n'
+                '✅ **Solutions:**\n'
+                '• Add me to the channel\n'
+                '• Make me admin (recommended for better access)\n'
+                '• Ensure the channel allows bots to join'
+            )
         else:
             return await message.reply(
                 f'❌ **Message Access Failed**\n\n'
                 f'Error: `{e}`\n\n'
-                '✅ **Ensure:**\n'
-                '• I\'m an admin with proper permissions\n'
-                '• The message ID is correct\n'
-                '• The channel allows bot access'
+                '✅ **Common solutions:**\n'
+                '• Add me to the channel\n'
+                '• Make me admin (recommended)\n'
+                '• Check message ID is correct\n'
+                '• Ensure channel allows bot access'
             )
 
-    # Determine channel characteristics
+    if not can_access_messages:
+        return await message.reply(
+            '❌ **Cannot Access Messages**\n\n'
+            'Unable to read messages from this channel.\n'
+            '✅ **Required:**\n'
+            '• Add me to the channel\n'
+            '• Admin status recommended but not always required\n'
+            '• Ensure proper permissions for bot access'
+        )
+
+    # Determine channel characteristics and access level
     channel_features = []
     if is_private:
         channel_features.append("🔒 Private")
@@ -251,11 +494,16 @@ async def process_index_request(bot, message, chat_id, last_msg_id, is_manual=Fa
         channel_features.append("🚫 Forwarding Restricted")
     if is_restricted:
         channel_features.append("⚠️ Content Restricted")
+    if not is_bot_admin:
+        channel_features.append("👤 Member Access")
+    else:
+        channel_features.append("👑 Admin Access")
     
     channel_type_display = " ".join(channel_features) if channel_features else "📢 Public Channel"
 
-    # Admin flow with enhanced information
+    # Admin flow with enhanced information including access level
     if message.from_user.id in ADMINS:
+        access_status = f"👑 Admin Access" if is_bot_admin else f"👤 Member Access ({access_method})"
         buttons = [
             [InlineKeyboardButton('✅ Accept & Index', callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')],
             [InlineKeyboardButton('❌ Close', callback_data='close_data')]
@@ -265,10 +513,12 @@ async def process_index_request(bot, message, chat_id, last_msg_id, is_manual=Fa
             f'📊 **Index Request Details**\n\n'
             f'**Source:** {source_type}\n'
             f'**Type:** {channel_type_display}\n'
+            f'**Access:** {access_status}\n'
             f'**Title:** `{chat_title}`\n'
             f'**Chat ID:** `{chat_id}`\n'
             f'**Last Message ID:** `{last_msg_id:,}`\n\n'
-            f'{"⚠️ **Note:** This channel has restrictions that may affect indexing." if (has_forward_restrictions or is_restricted) else ""}\n'
+            f'{"⚠️ **Note:** Bot is not admin - indexing may be slower and some features limited." if not is_bot_admin else ""}\n'
+            f'{"⚠️ **Restrictions:** This channel has limitations that may affect indexing." if (has_forward_restrictions or is_restricted) else ""}\n'
             f'Do you want to index this channel?\n\n'
             f'💡 **Need to set skip?** Use /setskip command',
             reply_markup=reply_markup)
@@ -511,32 +761,68 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
             total_messages = lst_msg_id
             total_fetch = lst_msg_id - current
             
-            # Get chat info for better logging
+            # Get chat info and bot access level for better logging
             try:
                 chat_info = await bot.get_chat(chat)
                 chat_title = chat_info.title or f"Chat {chat}"
                 is_private = chat_info.type == enums.ChatType.CHANNEL and not chat_info.username
-                channel_type = "🔒 Private" if is_private else "📢 Public"
+                
+                # Check bot's admin status
+                is_bot_admin = False
+                access_level = "Member"
+                try:
+                    bot_member = await bot.get_chat_member(chat, bot.me.id)
+                    is_bot_admin = bot_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]
+                    access_level = "Admin" if is_bot_admin else "Member"
+                except:
+                    pass
+                    
             except:
                 chat_title = f"Chat {chat}"
-                channel_type = "❓ Unknown"
+                is_private = False
+                is_bot_admin = False
+                access_level = "Unknown"
+
+            # Determine indexing approach based on access level
+            if not is_bot_admin:
+                # Reduce batch size for member access to avoid rate limits
+                BATCH_SIZE = 100
+                await msg.edit(
+                    "⚠️ **Member Access Mode**\n\n"
+                    f"**Channel:** `{chat_title}`\n"
+                    f"**Access:** 👤 {access_level}\n"
+                    f"**Note:** Indexing with member access (slower but works)\n\n"
+                    f"🚀 **Starting indexing...**",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🛑 Cancel', callback_data='index_cancel')]])
+                )
+            
+            channel_features = []
+            if is_private:
+                channel_features.append("🔒 Private")
+            if not is_bot_admin:
+                channel_features.append("👤 Member Access")
+            else:
+                channel_features.append("👑 Admin Access")
+            
+            channel_type_display = " ".join(channel_features) if channel_features else "📢 Public"
             
             if total_messages <= 0:
                 await msg.edit(
                     "🚫 **No Messages To Index**\n\n"
                     f"**Channel:** `{chat_title}`\n"
-                    f"**Type:** {channel_type}",
+                    f"**Type:** {channel_type_display}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('❌ Close', callback_data='close_data')]])
                 )
                 return
                 
-            batches = ceil(total_messages / BATCH_SIZE)
+            batches = ceil(total_fetch / BATCH_SIZE)
             batch_times = []
             
             await msg.edit(
                 f"🚀 **Indexing Started**\n\n"
                 f"**Channel:** `{chat_title}`\n"
-                f"**Type:** {channel_type}\n"
+                f"**Type:** {channel_type_display}\n"
+                f"**Batch Size:** `{BATCH_SIZE}` {'(Reduced for member access)' if not is_bot_admin else ''}\n"
                 f"**Total Messages:** `{total_messages:,}`\n"
                 f"**Messages to Fetch:** `{total_fetch:,}`\n"
                 f"**Elapsed:** `{get_readable_time(time.time() - start_time)}`",

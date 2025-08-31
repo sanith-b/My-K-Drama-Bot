@@ -27,7 +27,7 @@ import requests
 import string
 import tracemalloc
 
-from .spellcheck import *
+from .spellcheck import advantage_spell_chok, ai_spell_check
 
 tracemalloc.start()
 

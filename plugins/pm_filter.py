@@ -710,28 +710,132 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
-    _, id, user = query.data.split('#')
-    if int(user) != 0 and query.from_user.id != int(user):
-        return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-    movies = await get_poster(id, id=True)
-    movie = movies.get('title')
-    movie = re.sub(r"[:-]", " ", movie)
-    movie = re.sub(r"\s+", " ", movie).strip()
-    await query.answer(script.TOP_ALRT_MSG)
-    files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
-    if files:
-        k = (movie, files, offset, total_results)
-        await auto_filter(bot, query, k)
-    else:
-        reqstr1 = query.from_user.id if query.from_user else 0
-        reqstr = await bot.get_users(reqstr1)
-        if NO_RESULTS_MSG:
-            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
-        contact_admin_button = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
-        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
-        await asyncio.sleep(10)
-        await k.delete()
+    try:
+        # Parse callback data with error handling
+        try:
+            data_parts = query.data.split('#')
+            if len(data_parts) < 3:
+                await query.answer("Invalid request data", show_alert=True)
+                return
+            _, id, user = data_parts
+        except ValueError:
+            await query.answer("Invalid request format", show_alert=True)
+            return
+
+        # Validate and convert user ID
+        try:
+            user_id = int(user)
+            if user_id != 0 and query.from_user.id != user_id:
+                return await query.answer(
+                    script.ALRT_TXT.format(query.from_user.first_name), 
+                    show_alert=True
+                )
+        except (ValueError, TypeError):
+            await query.answer("Invalid user ID", show_alert=True)
+            return
+
+        # Get movie information with error handling
+        try:
+            movies = await get_poster(id, id=True)
+            if not movies or 'title' not in movies:
+                await query.answer("Movie information not found", show_alert=True)
+                return
+            
+            movie_title = movies.get('title', '')
+            if not movie_title:
+                await query.answer("Movie title not available", show_alert=True)
+                return
+                
+        except Exception as e:
+            print(f"Error getting movie poster: {e}")
+            await query.answer("Failed to retrieve movie information", show_alert=True)
+            return
+
+        # Clean movie title
+        movie = re.sub(r"[:-]", " ", movie_title)
+        movie = re.sub(r"\s+", " ", movie).strip()
+        
+        if not movie:
+            await query.answer("Invalid movie title", show_alert=True)
+            return
+
+        # Send initial response
+        try:
+            await query.answer(script.TOP_ALRT_MSG)
+        except Exception as e:
+            print(f"Error sending initial alert: {e}")
+
+        # Search for movie files
+        try:
+            files, offset, total_results = await get_search_results(
+                query.message.chat.id, 
+                movie, 
+                offset=0, 
+                filter=True
+            )
+        except Exception as e:
+            print(f"Error in search results: {e}")
+            await query.message.edit("Search error occurred. Please try again later.")
+            return
+
+        # Handle search results
+        if files:
+            try:
+                k = (movie, files, offset, total_results)
+                await auto_filter(bot, query, k)
+            except Exception as e:
+                print(f"Error in auto_filter: {e}")
+                await query.message.edit("Error displaying results. Please try again.")
+        else:
+            # Handle no results found
+            try:
+                reqstr1 = query.from_user.id if query.from_user else 0
+                reqstr = await bot.get_users(reqstr1)
+                
+                # Send notification to admin channel if enabled
+                if 'NO_RESULTS_MSG' in globals() and NO_RESULTS_MSG:
+                    try:
+                        await bot.send_message(
+                            chat_id=BIN_CHANNEL,
+                            text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie)
+                        )
+                    except Exception as e:
+                        print(f"Error sending admin notification: {e}")
+
+                # Create contact admin button
+                contact_admin_button = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "🔔 Send Request to Admin 🔔", 
+                        url=OWNER_LNK
+                    )
+                ]])
+                
+                # Edit message with not found text
+                k = await query.message.edit(
+                    script.MVE_NT_FND,
+                    reply_markup=contact_admin_button
+                )
+                
+                # Auto-delete message after delay
+                await asyncio.sleep(10)
+                try:
+                    await k.delete()
+                except Exception as e:
+                    print(f"Error deleting message: {e}")
+                    
+            except Exception as e:
+                print(f"Error handling no results: {e}")
+                try:
+                    await query.message.edit("Movie not found. Please contact admin.")
+                except:
+                    pass
+
+    except Exception as e:
+        print(f"Unexpected error in advantage_spoll_choker: {e}")
+        try:
+            await query.answer("An unexpected error occurred", show_alert=True)
+        except:
+            pass
                 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):

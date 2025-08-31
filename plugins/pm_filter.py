@@ -1709,10 +1709,13 @@ async def advanced_spell_check(client, message):
         logger.info(f"User {user_id} searching: '{search}' -> cleaned: '{query}'")
         
         # Show searching indicator
-        searching_msg = await message.reply(
-            f"🔍 *Searching for:* `{search}`\n\nPlease wait...",
-            parse_mode='Markdown'
-        )
+        try:
+            searching_msg = await message.reply(
+                f"🔍 *Searching for:* `{search}`\n\nPlease wait..."
+            )
+        except Exception as e:
+            logger.error(f"Error sending search message: {e}")
+            searching_msg = None
         
         # Try to get movies with timeout
         try:
@@ -2041,12 +2044,14 @@ async def advantage_spell_chok(client, message):
         
         # Validate input
         if len(search) < 2:
-            short_msg = await message.reply(
-                "📝 *Movie name too short*\n\nPlease send a longer movie name!",
-                parse_mode='Markdown'
-            )
-            await asyncio.sleep(15)
-            await _safe_delete(short_msg)
+            try:
+                short_msg = await message.reply(
+                    "📝 *Movie name too short*\n\nPlease send a longer movie name!"
+                )
+                await asyncio.sleep(15)
+                await _safe_delete(short_msg)
+            except Exception as e:
+                logger.error(f"Error sending short message reply: {e}")
             return
         
         # Get settings with error handling
@@ -2066,7 +2071,10 @@ async def advantage_spell_chok(client, message):
         logger.info(f"Processing search: '{search}' -> '{query}' from user {user_id}")
         
         # Show typing indicator
-        await client.send_chat_action(chat_id, "typing")
+        try:
+            await client.send_chat_action(chat_id, "typing")
+        except Exception as e:
+            logger.debug(f"Could not send typing action: {e}")
         
         # Try to get movies with enhanced error handling
         try:
@@ -2074,28 +2082,29 @@ async def advantage_spell_chok(client, message):
                 get_poster(search, bulk=True),
                 timeout=15
             )
+            logger.info(f"get_poster returned: {type(movies)} with {len(movies) if movies else 0} items")
         except asyncio.TimeoutError:
-            timeout_msg = await message.reply(
-                f"⏰ *Search timed out*\n\n"
-                f"The search for `{search}` is taking too long.\n"
-                f"Please try a simpler movie name.",
-                parse_mode='Markdown'
-            )
-            await asyncio.sleep(20)
-            await _safe_delete(timeout_msg)
-            await _safe_delete(message)
+            try:
+                timeout_msg = await message.reply(
+                    f"⏰ *Search timed out*\n\nThe search for `{search}` is taking too long.\nPlease try a simpler movie name."
+                )
+                await asyncio.sleep(20)
+                await _safe_delete(timeout_msg)
+                await _safe_delete(message)
+            except Exception as e:
+                logger.error(f"Error handling timeout: {e}")
             return
         except Exception as e:
             logger.error(f"Error getting poster for '{search}': {e}")
-            k = await message.reply(
-                f"⚠️ *Search Error*\n\n"
-                f"Sorry {user_mention}, couldn't search for movies right now.\n"
-                f"Please try again in a moment.",
-                parse_mode='Markdown'
-            )
-            await asyncio.sleep(30)
-            await _safe_delete(k)
-            await _safe_delete(message)
+            try:
+                k = await message.reply(
+                    f"⚠️ *Search Error*\n\nSorry {user_mention}, couldn't search for movies right now.\nPlease try again in a moment."
+                )
+                await asyncio.sleep(30)
+                await _safe_delete(k)
+                await _safe_delete(message)
+            except Exception as cleanup_e:
+                logger.error(f"Error during error handling: {cleanup_e}")
             return
         
         if not movies:
@@ -2169,7 +2178,6 @@ async def advantage_spell_chok(client, message):
         
         # Movies found - show selection
         limited_movies = movies[:MAX_MOVIE_RESULTS]
-        user = message.from_user.id if message.from_user else 0
         
         buttons = []
         for movie in limited_movies:
@@ -2184,13 +2192,13 @@ async def advantage_spell_chok(client, message):
             buttons.append([
                 InlineKeyboardButton(
                     text=f"🎬 {display_title}",
-                    callback_data=f"spol#{movie.movieID}#{user}"
+                    callback_data=f"spol#{movie.get('movieID', '')}#{user_id}"
                 )
             ])
         
         # Add footer buttons
         footer_buttons = [
-            InlineKeyboardButton("🔄 New Search", callback_data=f"new_search#{user}"),
+            InlineKeyboardButton("🔄 New Search", callback_data=f"new_search#{user_id}"),
             InlineKeyboardButton("❌ Close", callback_data='close_data')
         ]
         buttons.append(footer_buttons)
@@ -2246,6 +2254,3 @@ async def log_search_stats(user_id: int, search_term: str, result_count: int, su
         logger.info(f"SEARCH_STATS | User: {user_id} | Query: '{search_term}' | Results: {result_count} | Status: {status}")
     except Exception as e:
         logger.error(f"Error logging stats: {e}")
-
-# Example of how to add to your bot
-# application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, advantage_spell_chok))

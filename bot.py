@@ -15,7 +15,7 @@ from database.users_chats_db import db
 from info import *
 from utils import temp
 from Script import script
-from plugins import web_server, check_expired_premium, keep_alive
+from plugins import web_server, check_expired_premium
 from Lucia.Bot import SilentX
 from Lucia.util.keepalive import ping_server
 from Lucia.Bot.clients import initialize_clients

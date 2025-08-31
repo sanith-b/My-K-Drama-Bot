@@ -26,9 +26,17 @@ from database.topdb import silentdb
 import requests
 import string
 import tracemalloc
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from typing import List, Optional
+import logging
 
-from .spellcheck import advantage_spell_chok, ai_spell_check
+SIMILARITY_THRESHOLD = 85
+MAX_SEARCH_ATTEMPTS = 5
+MESSAGE_TIMEOUT = 90
+MAX_MOVIE_RESULTS = 10
 
+# Set up logging
+logger = logging.getLogger(__name__)
 tracemalloc.start()
 
 TIMEZONE = "Asia/Kolkata"

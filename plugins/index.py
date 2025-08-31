@@ -433,14 +433,14 @@ async def chat_info_command(bot, message):
     try:
         cmd_parts = message.text.split()
         if len(cmd_parts) < 2:
-        await message.reply(
-            f'❌ **Invalid Usage**\n\n'
-            f'**Format:** `/chatinfo <chat_id_or_username>`\n'
-            f'**Examples:**\n'
-            f'• `/chatinfo -1001234567890`\n'
-            f'• `/chatinfo @channel`\n\n'
-            f'💡 **For restricted channels:** Use the full chat ID starting with -100'
-        )
+            return await message.reply(
+                f'❌ **Invalid Usage**\n\n'
+                f'**Format:** `/chatinfo <chat_id_or_username>`\n'
+                f'**Examples:**\n'
+                f'• `/chatinfo -1001234567890`\n'
+                f'• `/chatinfo @channel`\n\n'
+                f'💡 **For restricted channels:** Use the full chat ID starting with -100'
+            )
         
         chat_id = cmd_parts[1]
         try:

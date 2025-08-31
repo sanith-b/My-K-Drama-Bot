@@ -21,17 +21,9 @@ from Lucia.util.keepalive import ping_server
 from Lucia.Bot.clients import initialize_clients
 from PIL import Image
 Image.MAX_IMAGE_PIXELS = 500_000_000
-
+from logging_helper import LOGGER
 import logging
-import logging.config
 
-logging.config.fileConfig('logging.conf')
-logging.getLogger().setLevel(logging.INFO)
-logging.getLogger("pyrogram").setLevel(logging.ERROR)
-logging.getLogger("imdbpy").setLevel(logging.ERROR)
-logging.getLogger("aiohttp").setLevel(logging.ERROR)
-logging.getLogger("aiohttp.web").setLevel(logging.ERROR)
-logging.getLogger("pymongo").setLevel(logging.WARNING)
 
 botStartTime = time.time()
 ppath = "plugins/*.py"

@@ -31,18 +31,3 @@ python-Levenshtein==0.21.0
 flask
 redis
 
-# K-Drama Poster Identification Plugin Requirements
-# All packages are FREE and open source!
-
-# Core dependencies
-pytesseract>=0.3.10        # FREE OCR (no API costs!)
-difflib                    # Text similarity (built-in Python)
-
-# Optional enhancements (still free!)
-opencv-python>=4.7.0       # Advanced image processing
-numpy>=1.21.0              # Numerical operations
-
-# Bot framework dependencies (choose one based on your bot)
-# discord.py>=2.0.0        # For Discord bots
-# python-telegram-bot>=20.0 # For Telegram bots
-# slack-sdk>=3.19.0        # For Slack bots

@@ -31,9 +31,9 @@ files = glob.glob(ppath)
 
 async def SilentXBotz_start():
     print('\n\nInitalizing DreamxBotz')
-    await dreamxbotz.start()
+    await SilentXBotz.start()
     bot_info = await dreamxbotz.get_me()
-    dreamxbotz.username = bot_info.username
+    SilentXBotz.username = bot_info.username
     await initialize_clients()
     for name in files:
         with open(name) as a:

@@ -1,80 +1,99 @@
-# Core Telegram Bot Framework
-pyrogram==2.0.106
 pyrofork==2.3.45
-TgCrypto==1.2.5
 tgcrypto-pyrofork
-python-telegram-bot==20.8
-
-# Database and Storage
 pymongo[srv]==4.11.1
 motor==3.7.0
+marshmallow==3.26.1
 umongo
+requests
+bs4
+git+https://github.com/Joelkb/cinemagoer
+shortzy
+datetime
+pytz
+aiohttp
+opencv-python-headless==4.8.1.78
+python-dotenv==0.21.1
+speedtest
+humanize
+Pillow
+psutil
+numpy
+wheel
+ujson
+wget
+aiofiles
 dnspython==2.6.1
-redis==5.0.8
+python-decouple
+ffmpeg-python==0.2.0
+jinja2
+fuzzywuzzy
+python-Levenshtein==0.21.0 
+flask
 
-# Web Framework and HTTP
+
+# Core Telegram Bot Framework
+pyrogram==2.0.106
+TgCrypto==1.2.5
+
+# Database and Storage
+pymongo==4.6.1
+motor==3.3.2
+dnspython==2.4.2
+
+# Web Framework (if using webhooks)
 aiohttp==3.9.1
 aiofiles==23.2.0
+
+# Utilities and Helpers
+python-dotenv==1.0.0
 requests==2.31.0
 urllib3==2.1.0
-flask
-jinja2
 
-# Configuration and Environment
-python-dotenv==0.21.1
-python-decouple
-configparser==6.0.0
-pyyaml==6.0.1
-
-# Async Support and Performance
+# Async Support
 asyncio-throttle==1.0.2
 aioredis==2.0.1
-uvloop==0.19.0
-cchardet==2.1.7
-ujson
-wheel
 
-# File and Media Processing
+# File Processing
 python-magic==0.4.27
 Pillow==10.1.0
-opencv-python-headless==4.8.1.78
-ffmpeg-python==0.2.0
-numpy
 
 # Date and Time
 python-dateutil==2.8.2
 pytz==2023.3
-datetime
 
-# Text Processing and Search
-regex==2023.10.3
-humanize==4.8.0
-fuzzywuzzy
-python-Levenshtein==0.21.0
-bs4
-
-# Serialization and Data Processing
-marshmallow==3.26.1
-
-# System Monitoring and Utilities
+# Logging and Monitoring
 colorlog==6.8.0
 psutil==5.9.6
-speedtest
-wget
+
+# Text Processing
+regex==2023.10.3
+humanize==4.8.0
+
+# Additional Telegram Utilities
+telethon==1.32.1
+
+# Environment and Configuration
+configparser==6.0.0
+pyyaml==6.0.1
+
+# Performance and Optimization
+uvloop==0.19.0
+cchardet==2.1.7
 
 # Security
 cryptography==41.0.7
 
-# Task Scheduling
-apscheduler==3.10.4
-
-# External APIs and Services
-shortzy
-git+https://github.com/Joelkb/cinemagoer
-
-# Optional: Uncomment if needed
+# Optional: Database Alternatives
+# sqlite3 (built-in with Python)
 # aiosqlite==0.19.0
+
+# Optional: Web Server
 # fastapi==0.104.1
 # uvicorn==0.24.0
+
+# Optional: Media Processing
+# ffmpeg-python==0.2.0
+
+# Optional: Additional File Formats
 # python-docx==1.1.0
 # openpyxl==3.1.2

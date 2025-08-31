@@ -29,8 +29,3 @@ jinja2
 fuzzywuzzy
 python-Levenshtein==0.21.0 
 flask
-
-
-
-# Minimal requirements for the indexing bot
-pyrogram==2.0.106

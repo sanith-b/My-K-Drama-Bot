@@ -36,7 +36,6 @@ pyrogram==2.0.106
 TgCrypto==1.2.5
 
 # Database and Storage
-dnspython==2.4.2
 
 # Web Framework (if using webhooks)
 aiohttp==3.9.1

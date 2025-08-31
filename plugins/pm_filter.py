@@ -1985,16 +1985,6 @@ async def advantage_spell_chok(client, message):
     Main movie search handler with enhanced UX
     """
     try:
-        # Rate limiting check
-        if not rate_limiter.is_allowed(user_id):
-            rate_msg = await message.reply(
-                "⏳ *Please wait a moment*\n\nToo many searches! Try again in a few seconds.",
-                parse_mode='Markdown'
-            )
-            await asyncio.sleep(10)
-            await _safe_delete(rate_msg)
-            return
-        
         mv_id = message.id
         search = message.text.strip()
         chat_id = message.chat.id
@@ -2010,6 +2000,16 @@ async def advantage_spell_chok(client, message):
         else:
             user_id = 0
             user_mention = "User"
+        
+        # Rate limiting check (moved after user_id is defined)
+        if not rate_limiter.is_allowed(user_id):
+            rate_msg = await message.reply(
+                "⏳ *Please wait a moment*\n\nToo many searches! Try again in a few seconds.",
+                parse_mode='Markdown'
+            )
+            await asyncio.sleep(10)
+            await _safe_delete(rate_msg)
+            return
         
         # Validate input
         if len(search) < 2:
@@ -2218,6 +2218,10 @@ async def log_search_stats(user_id: int, search_term: str, result_count: int, su
         logger.info(f"SEARCH_STATS | User: {user_id} | Query: '{search_term}' | Results: {result_count} | Status: {status}")
     except Exception as e:
         logger.error(f"Error logging stats: {e}")
+
+# Example of how to add to your bot
+# application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, advantage_spell_chok))
+# application.add_handler(CallbackQueryHandler(handle_movie_callback))
 
 # Example of how to add to your bot
 # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, advantage_spell_chok))

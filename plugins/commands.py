@@ -159,67 +159,51 @@ async def start(client, message):
         message.text = movie 
         await auto_filter(client, message) 
         return
-            
+    
     data = message.command[1]
     try:
-        pre, grp_id, file_id = data.split('_', 2)
+        _, grp_id, file_id = data.split("_", 2)
+        grp_id = int(grp_id)
     except:
-        pre, grp_id, file_id = "", 0, data
+        _, grp_id, file_id = "", 0, data
 
-    try:
-        settings = await get_settings(int(data.split("_", 2)[1]))
-        fsub_id_list = settings.get('fsub_id', [])
-        btn = []
-        i = 1
-        fsub_id_list = fsub_id_list + AUTH_CHANNEL if AUTH_CHANNEL else fsub_id_list
-        fsub_id_list = fsub_id_list + AUTH_REQ_CHANNEL if AUTH_REQ_CHANNEL else fsub_id_list
-        
-        if fsub_id_list:
-            fsub_ids = []
-            for chnl in fsub_id_list:
-                if chnl not in fsub_ids:
-                    fsub_ids.append(chnl)
-                else:
-                    continue
-                try:
-                    channel_name = (await client.get_chat(chnl)).title or f"Update Channel"
-                except Exception:
-                    channel_name = f"Update Channel"
-                if AUTH_REQ_CHANNEL and chnl in AUTH_REQ_CHANNEL and not await is_req_subscribed(client, message, chnl):
-                    try:
-                        invite_link = await client.create_chat_invite_link(chnl, creates_join_request=True)
-                    except ChatAdminRequired:
-                        LOGGER.error("First, make me an Admin in the AUTH_CHANNEL")
-                        return
-                    btn.append([
-                        InlineKeyboardButton(f"{i}. {channel_name}", url=invite_link.invite_link)
-                    ])
-                elif chnl not in AUTH_REQ_CHANNEL and not await is_subscribed(client, message.from_user.id, chnl):
-                    try:
-                        invite_link = await client.create_chat_invite_link(chnl)
-                    except ChatAdminRequired:
-                        LOGGER.error("First, make me an Admin in the AUTH_CHANNEL")
-                        return
-                    btn.append([
-                        InlineKeyboardButton(f"{i}. {channel_name}", url=invite_link.invite_link)
-                    ])
-                i += 1
+    if not await db.has_premium_access(message.from_user.id): 
+        try:
+            btn = []
+            chat = int(data.split("_", 2)[1])
+            settings      = await get_settings(chat)
+            fsub_channels = list(dict.fromkeys((settings.get('fsub', []) if settings else [])+ AUTH_CHANNELS)) 
 
+            if fsub_channels:
+                btn += await is_subscribed(client, message.from_user.id, fsub_channels)
+            if AUTH_REQ_CHANNELS:
+                btn += await is_req_subscribed(client, message.from_user.id, AUTH_REQ_CHANNELS)
             if btn:
-                if message.command[1] != "subscribe":
-                    btn.append([InlineKeyboardButton("♻️ Retry!", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")])
-                await client.send_photo(
-                    chat_id=message.from_user.id,
-                    photo=random.choice(FSUB_IMG),
-                    caption=script.FORCESUB_TEXT,
-                    reply_markup=InlineKeyboardMarkup(btn),
-                    parse_mode=enums.ParseMode.HTML,
+                if len(message.command) > 1 and "_" in message.command[1]:
+                    kk, file_id = message.command[1].split("_", 1)
+                    btn.append([
+                        InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", callback_data=f"checksub#{kk}#{file_id}")
+                    ])
+                    reply_markup = InlineKeyboardMarkup(btn)
+                photo = random.choice(FSUB_PICS) if FSUB_PICS else "https://graph.org/file/7478ff3eac37f4329c3d8.jpg"
+                caption = (
+                    f"👋 ʜᴇʟʟᴏ {message.from_user.mention}\n\n"
+                    "🛑 ʏᴏᴜ ᴍᴜsᴛ ᴊᴏɪɴ ᴛʜᴇ ʀᴇǫᴜɪʀᴇᴅ ᴄʜᴀɴɴᴇʟs ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ.\n"
+                    "👉 ᴊᴏɪɴ ᴀʟʟ ᴛʜᴇ ʙᴇʟᴏᴡ ᴄʜᴀɴɴᴇʟs ᴀɴᴅ ᴛʀʏ ᴀɢᴀɪɴ."
+                )
+                await message.reply_photo(
+                    photo=photo,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
                 )
                 return
-    except Exception as e:
-        await log_error(client, f"Got Error In Force Subscription Function.\n\n Error - {e}")
-        LOGGER.error(f"Error In Fsub :- {e}")
-        
+
+        except Exception as e:
+            await log_error(client, f"❗️ Force Sub Error:\n\n{repr(e)}")
+            logger.error(f"❗️ Force Sub Error:\n\n{repr(e)}")
+
+
     user_id = m.from_user.id
     if not await db.has_premium_access(user_id):
         try:
@@ -228,7 +212,7 @@ async def start(client, message):
             settings = await get_settings(grp_id)
             is_second_shortener = await db.use_second_shortener(user_id, settings.get('verify_time', TWO_VERIFY_GAP)) 
             is_third_shortener = await db.use_third_shortener(user_id, settings.get('third_verify_time', THREE_VERIFY_GAP))
-            if settings.get("is_verify", IS_VERIFY) and (not user_verified or is_second_shortener or is_third_shortener):                
+            if settings.get("is_verify", IS_VERIFY) and (not user_verified or is_second_shortener or is_third_shortener):
                 verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
                 await db.create_verify_id(user_id, verify_id)
                 temp.VERIFICATIONS[user_id] = grp_id
@@ -261,8 +245,7 @@ async def start(client, message):
                 await m.delete()
                 return
         except Exception as e:
-            await log_error(client, f"Got Error In Verification Funtion.\n\n Error - {e}")
-            LOGGER.error(f"Error In Verification - {e}")
+            print(f"Error In Verification - {e}")
             pass
     
     if data.startswith("allfiles"):

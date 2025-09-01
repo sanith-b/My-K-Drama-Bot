@@ -13,7 +13,7 @@ def is_enabled(value, default):
     else:
         return default
 
-
+GEMINI_API_KEY = "AIzaSyCd8U99wyG2mb_gzx25D0-Pi7uk2e0zj5M"
 SESSION = environ.get('SESSION', 'media_search')
 API_ID = int(environ.get('API_ID', ''))
 API_HASH = environ.get('API_HASH', '')

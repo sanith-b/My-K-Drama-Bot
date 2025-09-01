@@ -30,4 +30,4 @@ fuzzywuzzy
 python-Levenshtein==0.21.0 
 flask
 redis
-
+google-generativeai>=0.3.2

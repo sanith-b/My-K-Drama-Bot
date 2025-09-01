@@ -13,7 +13,7 @@ from pyrogram import Client, filters
 import platform
 import shutil
 from pyrogram.types import BotCommand
-from info import ADMINS
+from info import ADMINS, GEMINI_API_KEY
 
 CMD = ["/", "."]
 Bot_cmds = {
@@ -38,16 +38,29 @@ class PosterIdentifier:
     def setup_ai_model(self):
         """Setup AI model for image analysis."""
         try:
-            gemini_key = os.getenv('AIzaSyCd8U99wyG2mb_gzx25D0-Pi7uk2e0zj5M')
-            if gemini_key:
-                genai.configure(api_key=gemini_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
-                self.ai_provider = 'gemini'
-                logger.info("Gemini AI configured successfully")
-            else:
-                logger.warning("No GEMINI_API_KEY found, poster identification disabled")
+            # Import from info.py instead of environment variables
+            gemini_key = GEMINI_API_KEY
+            if not gemini_key:
+                logger.warning("No GEMINI_API_KEY found in info.py")
                 self.model = None
                 self.ai_provider = None
+                return
+            
+            if len(gemini_key.strip()) < 10:
+                logger.warning("GEMINI_API_KEY appears to be invalid (too short)")
+                self.model = None
+                self.ai_provider = None
+                return
+                
+            genai.configure(api_key=gemini_key.strip())
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.ai_provider = 'gemini'
+            logger.info("Gemini AI configured successfully")
+            
+        except ImportError as e:
+            logger.error(f"Missing required package for AI: {e}")
+            self.model = None
+            self.ai_provider = None
         except Exception as e:
             logger.error(f"Failed to setup AI model: {e}")
             self.model = None
@@ -320,7 +333,7 @@ class PosterIdentifier:
 # Initialize poster identifier
 poster_identifier = PosterIdentifier()
 
-# Existing functions
+# Existing function
 
 # New Poster Identification Functions
 
@@ -423,3 +436,64 @@ async def list_known_dramas(client, message):
     await drama_msg.delete()
     await message.delete()
 
+@Client.on_message(filters.command("status", CMD) & filters.user(ADMINS))
+async def poster_status(client, message):
+    """Show poster identification status."""
+    ai_status = "✅ Configured" if poster_identifier.model else "❌ Not configured"
+    ai_provider = poster_identifier.ai_provider or "None"
+    
+    # Debug information
+    key_status = "✅ Set" if GEMINI_API_KEY else "❌ Missing"
+    key_length = len(GEMINI_API_KEY) if GEMINI_API_KEY else 0
+    
+    status_text = f"""
+🤖 **Poster Identification Debug Status**
+
+**AI Model:** {ai_status}
+**Provider:** {ai_provider}
+**Database:** {len(poster_identifier.kdrama_db)} dramas loaded
+
+**Environment Debug:**
+GEMINI_API_KEY: {key_status}
+Key Length: {key_length} characters
+
+**Dependencies:**
+PIL: {'✅ Available' if 'PIL' in globals() else '❌ Missing'}
+genai: {'✅ Available' if 'genai' in globals() else '❌ Missing'}
+
+**Error Details:**
+Check logs for setup errors
+    """
+    
+    status_msg = await message.reply_text(status_text)
+    await asyncio.sleep(120)
+    await status_msg.delete()
+    await message.delete()
+
+@Client.on_message(filters.command("testai", CMD) & filters.user(ADMINS))
+async def test_ai_setup(client, message):
+    """Test AI setup manually."""
+    test_msg = await message.reply_text("🧪 Testing AI setup...")
+    
+    try:
+        gemini_key = os.getenv('GEMINI_API_KEY')
+        if not gemini_key:
+            await test_msg.edit_text("❌ GEMINI_API_KEY not found in environment")
+            return
+        
+        # Try to configure Gemini
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Test with a simple prompt
+        response = model.generate_content("Say 'AI test successful'")
+        result = response.text
+        
+        await test_msg.edit_text(f"✅ AI Test Result: {result}")
+        
+    except Exception as e:
+        await test_msg.edit_text(f"❌ AI Test Failed: {str(e)}")
+    
+    await asyncio.sleep(60)
+    await test_msg.delete()
+    await message.delete()

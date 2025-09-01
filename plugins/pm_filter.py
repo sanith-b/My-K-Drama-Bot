@@ -1529,29 +1529,23 @@ async def cb_handler(client: Client, query: CallbackQuery):
     elif query.data == "upi":
         try:
         # Enhanced crypto donation buttons for Sri Lanka
-        btn = [
-            [
+        btn = [[
                 InlineKeyboardButton('🟠 BITCOIN ₿', callback_data='crypto_BTC'),
                 InlineKeyboardButton('💚 USDT ₮', callback_data='crypto_USDT'),
                 InlineKeyboardButton('🔷 ETHEREUM Ξ', callback_data='crypto_ETH'),
-            ],
-            [
+            ],[
                 InlineKeyboardButton('🟡 BINANCE BNB', callback_data='crypto_BNB'),
                 InlineKeyboardButton('🔵 CARDANO ₳', callback_data='crypto_ADA'),
                 InlineKeyboardButton('🟣 POLKADOT DOT', callback_data='crypto_DOT'),
-            ],
-            [
+            ],[
                 InlineKeyboardButton('💰 Quick Amounts', callback_data='quick_amounts'),
                 InlineKeyboardButton('📊 Live Prices', callback_data='all_prices'),
-            ],
-            [
+            ],[
                 InlineKeyboardButton('ℹ️ Why Donate?', callback_data='why_donate'),
                 InlineKeyboardButton('❓ Crypto Help', callback_data='donation_help'),
-            ],
-            [
+            ],[
                 InlineKeyboardButton('⬅️ Back', callback_data='buy')
-            ]
-        ]
+            ]]
         
         reply_markup = InlineKeyboardMarkup(btn)
         

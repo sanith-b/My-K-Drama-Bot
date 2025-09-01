@@ -1,5 +1,3 @@
-import qrcode
-import io
 import asyncio
 import re
 import ast
@@ -712,132 +710,28 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
-    try:
-        # Parse callback data with error handling
-        try:
-            data_parts = query.data.split('#')
-            if len(data_parts) < 3:
-                await query.answer("Invalid request data", show_alert=True)
-                return
-            _, id, user = data_parts
-        except ValueError:
-            await query.answer("Invalid request format", show_alert=True)
-            return
-
-        # Validate and convert user ID
-        try:
-            user_id = int(user)
-            if user_id != 0 and query.from_user.id != user_id:
-                return await query.answer(
-                    script.ALRT_TXT.format(query.from_user.first_name), 
-                    show_alert=True
-                )
-        except (ValueError, TypeError):
-            await query.answer("Invalid user ID", show_alert=True)
-            return
-
-        # Get movie information with error handling
-        try:
-            movies = await get_poster(id, id=True)
-            if not movies or 'title' not in movies:
-                await query.answer("Movie information not found", show_alert=True)
-                return
-            
-            movie_title = movies.get('title', '')
-            if not movie_title:
-                await query.answer("Movie title not available", show_alert=True)
-                return
-                
-        except Exception as e:
-            print(f"Error getting movie poster: {e}")
-            await query.answer("Failed to retrieve movie information", show_alert=True)
-            return
-
-        # Clean movie title
-        movie = re.sub(r"[:-]", " ", movie_title)
-        movie = re.sub(r"\s+", " ", movie).strip()
-        
-        if not movie:
-            await query.answer("Invalid movie title", show_alert=True)
-            return
-
-        # Send initial response
-        try:
-            await query.answer(script.TOP_ALRT_MSG)
-        except Exception as e:
-            print(f"Error sending initial alert: {e}")
-
-        # Search for movie files
-        try:
-            files, offset, total_results = await get_search_results(
-                query.message.chat.id, 
-                movie, 
-                offset=0, 
-                filter=True
-            )
-        except Exception as e:
-            print(f"Error in search results: {e}")
-            await query.message.edit("Search error occurred. Please try again later.")
-            return
-
-        # Handle search results
-        if files:
-            try:
-                k = (movie, files, offset, total_results)
-                await auto_filter(bot, query, k)
-            except Exception as e:
-                print(f"Error in auto_filter: {e}")
-                await query.message.edit("Error displaying results. Please try again.")
-        else:
-            # Handle no results found
-            try:
-                reqstr1 = query.from_user.id if query.from_user else 0
-                reqstr = await bot.get_users(reqstr1)
-                
-                # Send notification to admin channel if enabled
-                if 'NO_RESULTS_MSG' in globals() and NO_RESULTS_MSG:
-                    try:
-                        await bot.send_message(
-                            chat_id=BIN_CHANNEL,
-                            text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie)
-                        )
-                    except Exception as e:
-                        print(f"Error sending admin notification: {e}")
-
-                # Create contact admin button
-                contact_admin_button = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
-                        "🔔 Send Request to Admin 🔔", 
-                        url=OWNER_LNK
-                    )
-                ]])
-                
-                # Edit message with not found text
-                k = await query.message.edit(
-                    script.MVE_NT_FND,
-                    reply_markup=contact_admin_button
-                )
-                
-                # Auto-delete message after delay
-                await asyncio.sleep(10)
-                try:
-                    await k.delete()
-                except Exception as e:
-                    print(f"Error deleting message: {e}")
-                    
-            except Exception as e:
-                print(f"Error handling no results: {e}")
-                try:
-                    await query.message.edit("Movie not found. Please contact admin.")
-                except:
-                    pass
-
-    except Exception as e:
-        print(f"Unexpected error in advantage_spoll_choker: {e}")
-        try:
-            await query.answer("An unexpected error occurred", show_alert=True)
-        except:
-            pass
+    _, id, user = query.data.split('#')
+    if int(user) != 0 and query.from_user.id != int(user):
+        return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+    movies = await get_poster(id, id=True)
+    movie = movies.get('title')
+    movie = re.sub(r"[:-]", " ", movie)
+    movie = re.sub(r"\s+", " ", movie).strip()
+    await query.answer(script.TOP_ALRT_MSG)
+    files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
+    if files:
+        k = (movie, files, offset, total_results)
+        await auto_filter(bot, query, k)
+    else:
+        reqstr1 = query.from_user.id if query.from_user else 0
+        reqstr = await bot.get_users(reqstr1)
+        if NO_RESULTS_MSG:
+            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
+        contact_admin_button = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
+        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
+        await asyncio.sleep(10)
+        await k.delete()
                 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):
@@ -1524,430 +1418,28 @@ async def cb_handler(client: Client, query: CallbackQuery):
         except Exception as e:
             LOGGER.error(e)
 
-   # Replace your UPI section with this enhanced crypto donation handler
-
     elif query.data == "upi":
         try:
-        # Enhanced crypto donation buttons for Sri Lanka
-        btn = [[
-                InlineKeyboardButton('🟠 BITCOIN ₿', callback_data='crypto_BTC'),
-                InlineKeyboardButton('💚 USDT ₮', callback_data='crypto_USDT'),
-                InlineKeyboardButton('🔷 ETHEREUM Ξ', callback_data='crypto_ETH'),
-            ],[
-                InlineKeyboardButton('🟡 BINANCE BNB', callback_data='crypto_BNB'),
-                InlineKeyboardButton('🔵 CARDANO ₳', callback_data='crypto_ADA'),
-                InlineKeyboardButton('🟣 POLKADOT DOT', callback_data='crypto_DOT'),
-            ],[
-                InlineKeyboardButton('💰 Quick Amounts', callback_data='quick_amounts'),
-                InlineKeyboardButton('📊 Live Prices', callback_data='all_prices'),
-            ],[
-                InlineKeyboardButton('ℹ️ Why Donate?', callback_data='why_donate'),
-                InlineKeyboardButton('❓ Crypto Help', callback_data='donation_help'),
+            btn = [[ 
+                InlineKeyboardButton('USDT ₮', callback_data='buy'),
+                InlineKeyboardButton('TON ⛛', callback_data='buy'),
+                InlineKeyboardButton('BITCOIN ₿', callback_data='buy'),
             ],[
                 InlineKeyboardButton('⬅️ Back', callback_data='buy')
             ]]
-        
+            reply_markup = InlineKeyboardMarkup(btn)
             await client.edit_message_media(
                 query.message.chat.id, 
                 query.message.id, 
                 InputMediaPhoto(SUBSCRIPTION)
 	        ) 
             await query.message.edit_text(
-                text=script.donation_text.format(query.from_user.mention),
+                text=script.PREMIUM_UPI_TEXT.format(query.from_user.mention),
                 reply_markup=reply_markup,
                 parse_mode=enums.ParseMode.HTML
             ) 
         except Exception as e:
             LOGGER.error(e)
-        
-        # Enhanced donation text for Sri Lankan users
-        donation_text = f"""
-🇱🇰 <b>Crypto Donations - Sri Lanka Support</b>
-
-<b>🙏 Hello {query.from_user.mention}!</b>
-
-Support our bot with cryptocurrency donations! We accept all major cryptocurrencies popular in Sri Lanka.
-
-<b>💱 Current Exchange Rate:</b>
-1 USD = Rs. {SriLankaCryptoConfig.USD_TO_LKR_RATE}
-
-<b>🔐 Why Crypto Donations?</b>
-• ⚡ Instant global transfers
-• 🏦 No banking restrictions
-• 💸 Lower transaction fees
-• 🔒 Secure and transparent
-
-<b>🎯 How it works:</b>
-1. Choose your cryptocurrency
-2. Select donation amount
-3. Scan QR code or copy address
-4. Send from your wallet
-5. Get confirmation & donor benefits!
-
-<b>💎 Donor Perks:</b>
-• 🚀 Priority support
-• ⚡ Faster download speeds
-• 🎁 Early access to features
-• 🏆 Special donor badge
-
-Choose your preferred cryptocurrency below:
-        """
-        
-        # Update message with media if SUBSCRIPTION image exists
-
-
-# Additional handlers you'll need to add to your bot
-
-@Client.on_callback_query(filters.regex(r"^crypto_"))
-async def handle_crypto_selection(client, query):
-    """Handle cryptocurrency selection"""
-    try:
-        crypto = query.data.replace("crypto_", "")
-        
-        if crypto not in SriLankaCryptoConfig.SUPPORTED_CRYPTOS:
-            await query.answer("❌ Unsupported cryptocurrency", show_alert=True)
-            return
-        
-        await query.answer(f"Loading {crypto} donation options...", show_alert=False)
-        
-        config = SriLankaCryptoConfig.SUPPORTED_CRYPTOS[crypto]
-        
-        # Get current price
-        system = CryptoDonationSystem()
-        prices = await system.get_crypto_prices()
-        current_price_usd = prices.get(crypto, 0)
-        current_price_lkr = current_price_usd * SriLankaCryptoConfig.USD_TO_LKR_RATE
-        
-        # Create amount selection buttons
-        amount_buttons = []
-        
-        # First row - smaller amounts
-        row1 = []
-        for usd_amount in [5, 10, 25]:
-            lkr_amount = usd_amount * SriLankaCryptoConfig.USD_TO_LKR_RATE
-            crypto_amount = usd_amount / current_price_usd if current_price_usd > 0 else 0
-            button_text = f"${usd_amount} (₨{lkr_amount:,.0f})"
-            row1.append(InlineKeyboardButton(button_text, callback_data=f"amount_{crypto}_{usd_amount}"))
-        
-        # Second row - larger amounts  
-        row2 = []
-        for usd_amount in [50, 100, 250]:
-            lkr_amount = usd_amount * SriLankaCryptoConfig.USD_TO_LKR_RATE
-            button_text = f"${usd_amount} (₨{lkr_amount:,.0f})"
-            row2.append(InlineKeyboardButton(button_text, callback_data=f"amount_{crypto}_{usd_amount}"))
-        
-        amount_buttons.extend([row1, row2])
-        
-        # Additional options
-        amount_buttons.extend([
-            [
-                InlineKeyboardButton("💎 Just Show Address", callback_data=f"address_only_{crypto}"),
-                InlineKeyboardButton("🎯 Custom Amount", callback_data=f"custom_{crypto}")
-            ],
-            [
-                InlineKeyboardButton("📊 Live Price", callback_data=f"price_{crypto}"),
-                InlineKeyboardButton("🔙 Back", callback_data="upi")
-            ]
-        ])
-        
-        crypto_text = f"""
-{config['emoji']} <b>{config['name']} ({crypto}) Donation</b>
-
-<b>💱 Current Price:</b>
-• 1 {crypto} = ${current_price_usd:,.2f} USD
-• 1 {crypto} = Rs. {current_price_lkr:,.2f} LKR
-
-<b>🏦 Network:</b> {config['network']}
-<b>⚡ Min. Donation:</b> {config['min_donation']} {crypto}
-
-<b>💰 Choose donation amount:</b>
-
-<i>Popular with Sri Lankan donors! 🇱🇰</i>
-        """
-        
-        await query.message.edit_text(
-            text=crypto_text,
-            reply_markup=InlineKeyboardMarkup(amount_buttons),
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Error in crypto selection: {e}")
-        await query.answer("❌ Error loading crypto options", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^amount_"))
-async def handle_donation_amount(client, query):
-    """Handle final donation processing with QR code and address"""
-    try:
-        _, crypto, amount_str = query.data.split("_")
-        amount_usd = float(amount_str)
-        
-        await query.answer(f"Preparing {crypto} payment details...", show_alert=False)
-        
-        config = SriLankaCryptoConfig.SUPPORTED_CRYPTOS[crypto]
-        system = CryptoDonationSystem()
-        prices = await system.get_crypto_prices()
-        
-        # Calculate amounts
-        crypto_price = prices.get(crypto, 0)
-        amount_lkr = amount_usd * SriLankaCryptoConfig.USD_TO_LKR_RATE
-        crypto_amount = amount_usd / crypto_price if crypto_price > 0 else 0
-        
-        # Generate QR code
-        qr_bytes = system.generate_qr_code(config['address'], crypto_amount, crypto)
-        
-        # Create payment message
-        payment_text = f"""
-{config['emoji']} <b>{config['name']} Payment Details</b>
-
-<b>💰 Your Donation:</b>
-• 🇺🇸 ${amount_usd:.2f} USD
-• 🇱🇰 Rs. {amount_lkr:,.2f} LKR  
-• {config['emoji']} {crypto_amount:.6f} {crypto}
-
-<b>📬 Send to this address:</b>
-<code>{config['address']}</code>
-
-<b>🏦 Network:</b> {config['network']}
-
-<b>⚠️ Important for Sri Lankan users:</b>
-• Use Binance/KuCoin to buy {crypto}
-• Send exactly {crypto_amount:.6f} {crypto}
-• Verify network: {config['network']}
-• Transaction takes 10-30 minutes
-
-<b>🙏 Thank you for supporting our Sri Lankan bot community!</b>
-        """
-        
-        # Action buttons
-        keyboard = [
-            [
-                InlineKeyboardButton("📋 Copy Address", callback_data=f"copy_address_{crypto}"),
-                InlineKeyboardButton("🔄 Refresh Price", callback_data=f"refresh_price_{crypto}")
-            ],
-            [
-                InlineKeyboardButton("✅ I've Sent Payment", callback_data=f"confirm_payment_{crypto}_{amount_usd}"),
-                InlineKeyboardButton("❓ Need Help?", callback_data="donation_help")
-            ],
-            [
-                InlineKeyboardButton("🔙 Choose Different Amount", callback_data=f"crypto_{crypto}"),
-                InlineKeyboardButton("🏠 Main Menu", callback_data="buy")
-            ]
-        ]
-        
-        # Send with QR code if available
-        if qr_bytes:
-            await query.message.delete()
-            await client.send_photo(
-                chat_id=query.message.chat.id,
-                photo=qr_bytes,
-                caption=payment_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=enums.ParseMode.HTML
-            )
-        else:
-            await query.message.edit_text(
-                text=payment_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-            
-    except Exception as e:
-        LOGGER.error(f"Error processing donation amount: {e}")
-        await query.answer("❌ Error processing donation", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^address_only_"))
-async def show_address_only(client, query):
-    """Show crypto address without specific amount"""
-    try:
-        crypto = query.data.replace("address_only_", "")
-        config = SriLankaCryptoConfig.SUPPORTED_CRYPTOS[crypto]
-        
-        # Generate QR code for address only
-        system = CryptoDonationSystem()
-        qr_bytes = system.generate_qr_code(config['address'])
-        
-        address_text = f"""
-{config['emoji']} <b>{config['name']} Donation Address</b>
-
-<b>📬 Wallet Address:</b>
-<code>{config['address']}</code>
-
-<b>🏦 Network:</b> {config['network']}
-<b>⚡ Minimum:</b> {config['min_donation']} {crypto}
-
-<b>💡 Send any amount you wish!</b>
-
-<b>🇱🇰 For Sri Lankan users:</b>
-• Buy {crypto} on Binance/KuCoin
-• Use {config['network']} network only
-• Double-check address before sending
-• Keep transaction receipt
-
-<b>🙏 Every donation helps keep our bot free!</b>
-        """
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📋 Copy Address", callback_data=f"copy_address_{crypto}"),
-                InlineKeyboardButton("💰 Set Amount", callback_data=f"crypto_{crypto}")
-            ],
-            [
-                InlineKeyboardButton("✅ Payment Sent", callback_data=f"confirm_payment_{crypto}_0"),
-                InlineKeyboardButton("❓ Help", callback_data="donation_help")
-            ],
-            [
-                InlineKeyboardButton("🔙 Back", callback_data="upi")
-            ]
-        ]
-        
-        if qr_bytes:
-            await query.message.delete()
-            await client.send_photo(
-                chat_id=query.message.chat.id,
-                photo=qr_bytes,
-                caption=address_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=enums.ParseMode.HTML
-            )
-        else:
-            await query.message.edit_text(
-                text=address_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=enums.ParseMode.HTML
-            )
-            
-    except Exception as e:
-        LOGGER.error(f"Error showing address only: {e}")
-        await query.answer("❌ Error loading address", show_alert=True)
-
-# You'll also need to add this configuration at the top of your file
-class SriLankaCryptoConfig:
-    TIMEZONE = 'Asia/Colombo'
-    USD_TO_LKR_RATE = 320  # Update this regularly
-    
-    SUPPORTED_CRYPTOS = {
-        'BTC': {
-            'name': 'Bitcoin',
-            'symbol': '₿',
-            'emoji': '🟠',
-            'min_donation': 0.0001,
-            'network': 'Bitcoin',
-            'address': 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh'  # Replace with your actual BTC address
-        },
-        'USDT': {
-            'name': 'Tether USD',
-            'symbol': '₮',
-            'emoji': '💚',
-            'min_donation': 1,
-            'network': 'Ethereum (ERC-20)',
-            'address': '0x742d35Cc6065C33532C1dcE3c12345b890bc6789'  # Replace with your actual USDT address
-        },
-        'ETH': {
-            'name': 'Ethereum',
-            'symbol': 'Ξ',
-            'emoji': '🔷',
-            'min_donation': 0.001,
-            'network': 'Ethereum',
-            'address': '0x742d35Cc6065C33532C1dcE3c12345b890bc6789'  # Replace with your actual ETH address
-        },
-        'BNB': {
-            'name': 'Binance Coin',
-            'symbol': 'BNB',
-            'emoji': '🟡',
-            'min_donation': 0.01,
-            'network': 'Binance Smart Chain',
-            'address': '0x742d35Cc6065C33532C1dcE3c12345b890bc6789'  # Replace with your actual BNB address
-        },
-        'ADA': {
-            'name': 'Cardano',
-            'symbol': '₳',
-            'emoji': '🔵',
-            'min_donation': 1,
-            'network': 'Cardano',
-            'address': 'addr1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh'  # Replace with your actual ADA address
-        },
-        'DOT': {
-            'name': 'Polkadot',
-            'symbol': 'DOT',
-            'emoji': '🟣',
-            'min_donation': 0.1,
-            'network': 'Polkadot',
-            'address': '1xy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh'  # Replace with your actual DOT address
-        }
-    }
-
-# Simple crypto price fetcher (add this function)
-async def get_crypto_prices():
-    """Simple price fetcher for the crypto system"""
-    try:
-        # You can use this simple version or the full CryptoDonationSystem class
-        crypto_ids = "bitcoin,ethereum,tether,binancecoin,cardano,polkadot"
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_ids}&vs_currencies=usd"
-        
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'BTC': data.get('bitcoin', {}).get('usd', 45000),
-                'ETH': data.get('ethereum', {}).get('usd', 2500),
-                'USDT': data.get('tether', {}).get('usd', 1),
-                'BNB': data.get('binancecoin', {}).get('usd', 300),
-                'ADA': data.get('cardano', {}).get('usd', 0.5),
-                'DOT': data.get('polkadot', {}).get('usd', 7)
-            }
-    except Exception as e:
-        LOGGER.error(f"Error fetching prices: {e}")
-    
-    # Fallback prices
-    return {
-        'BTC': 45000, 'ETH': 2500, 'USDT': 1,
-        'BNB': 300, 'ADA': 0.5, 'DOT': 7
-    }
-
-# Simple QR code generator (add this function)
-def generate_simple_qr(address, amount=None, crypto=None):
-    """Simple QR code generator"""
-    try:
-        import qrcode
-        import io
-        
-        # Create payment URI
-        if crypto and amount:
-            uri = f"{crypto.lower()}:{address}?amount={amount}"
-        else:
-            uri = address
-        
-        qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(uri)
-        qr.make(fit=True)
-        
-        img = qr.make_image(fill_color="black", back_color="white")
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-        
-        return img_bytes
-    except Exception as e:
-        LOGGER.error(f"QR generation error: {e}")
-        return None
-
-# Update your script.py file to include this text (replace PREMIUM_UPI_TEXT)
-CRYPTO_DONATION_TEXT = """
-🇱🇰 <b>Crypto Donations - Sri Lanka Support</b>
-
-<b>🙏 Hello {0}!</b>
-
-Support our bot with secure cryptocurrency donations!
-
-<b>💱 Exchange Rate:</b> 1 USD = Rs. 320
-<b>🔐 Secure:</b> All addresses verified
-<b>⚡ Fast:</b> 10-30 minute confirmations
-<b>🌍 Global:</b> No banking restrictions
-
-Choose your preferred cryptocurrency:
-"""
 
 
     elif query.data == "star":

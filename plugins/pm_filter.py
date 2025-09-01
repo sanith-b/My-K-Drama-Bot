@@ -1547,7 +1547,18 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 InlineKeyboardButton('⬅️ Back', callback_data='buy')
             ]]
         
-        reply_markup = InlineKeyboardMarkup(btn)
+            await client.edit_message_media(
+                query.message.chat.id, 
+                query.message.id, 
+                InputMediaPhoto(SUBSCRIPTION)
+	        ) 
+            await query.message.edit_text(
+                text=script.donation_text.format(query.from_user.mention),
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            ) 
+        except Exception as e:
+            LOGGER.error(e)
         
         # Enhanced donation text for Sri Lankan users
         donation_text = f"""
@@ -1583,25 +1594,7 @@ Choose your preferred cryptocurrency below:
         """
         
         # Update message with media if SUBSCRIPTION image exists
-        try:
-            await client.edit_message_media(
-                query.message.chat.id, 
-                query.message.id, 
-                InputMediaPhoto(SUBSCRIPTION)
-            )
-        except:
-            pass  # Continue without media update if it fails
-            
-        await query.message.edit_text(
-            text=donation_text,
-            reply_markup=reply_markup,
-            parse_mode=enums.ParseMode.HTML,
-            disable_web_page_preview=True
-        )
-        
-    except Exception as e:
-        LOGGER.error(f"Error in crypto donation handler: {e}")
-        await query.answer("❌ Error loading donation menu", show_alert=True)
+
 
 # Additional handlers you'll need to add to your bot
 

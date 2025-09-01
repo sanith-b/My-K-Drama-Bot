@@ -1526,8 +1526,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
    # Replace your UPI section with this enhanced crypto donation handler
 
-elif query.data == "upi":
-    try:
+    elif query.data == "upi":
+        try:
         # Enhanced crypto donation buttons for Sri Lanka
         btn = [
             [

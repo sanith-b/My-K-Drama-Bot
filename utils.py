@@ -717,17 +717,3 @@ async def group_setting_buttons(grp_id):
                 InlineKeyboardButton('🔒 Exit Settings', callback_data='close_data')
     ]]
     return buttons
-
-async def get_readable_time(seconds: int) -> str:
-    count = 0
-    time_list = []
-    time_suffix_list = ["s", "m", "h", "d"]
-
-    while count < 4:
-        count += 1
-        if seconds == 0:
-            break
-        seconds, remainder = divmod(seconds, 60 if count < 3 else 24)
-        time_list.append(f"{int(remainder)}{time_suffix_list[count-1]}")
-
-    return " ".join(reversed(time_list))

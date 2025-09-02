@@ -10,8 +10,8 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQ
 import logging
 import json
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)
+# Global dictionary to store identified titles for users
+identified_titles = {}
 
 IMDB_TEMP = """
 "🏷 <b>Title:</b> <a href={url}>{title} {year}</a> <a href={url}/ratings>{rating}</a>/ 10   
@@ -288,14 +288,14 @@ async def showid(client, message):
 async def identify_poster_command(client, message):
     """Identify movie poster from image using FREE public APIs"""
     if message.reply_to_message and message.reply_to_message.photo:
-        status_msg = await message.reply("🔍 Analyzing poster with FREE APIs...")
+        status_msg = await message.reply("🔍 Analyzing poster...")
         
         try:
             # Download the image
             photo = message.reply_to_message.photo
             file_path = await client.download_media(photo.file_id)
             
-            await status_msg.edit("🤖 Using OCR.space API (Free - 25k/month)...")
+            await status_msg.edit("🤖")
             
             # Identify poster using FREE API methods
             identified_title = await poster_identifier.identify_poster(file_path)
@@ -307,11 +307,14 @@ async def identify_poster_command(client, message):
                 movies = await get_poster(identified_title, bulk=True)
                 
                 if movies:
+                    # Store the identified title for this user
+                    identified_titles[message.from_user.id] = identified_title
+                    
                     btn = [
                         [
                             InlineKeyboardButton(
                                 text=f"{movie.get('title')} - {movie.get('year')}",
-                                callback_data=f"imdb#{movie.movieID}",
+                                callback_data=f"imdb#{movie.movieID}#{message.from_user.id}",
                             )
                         ]
                         for movie in movies[:8]  # Limit to 8 results
@@ -320,25 +323,24 @@ async def identify_poster_command(client, message):
                     
                     await status_msg.edit(
                         f"🎯 **Identified:** {identified_title}\n"
-                        f"✨ **Method:** FREE OCR APIs\n\n"
-                        f"📽️ **IMDB Results:**",
+                        f"✨ **Method:** OCR\n\n"
+                        f"📽️ **IMDB Results:**\n"
+                        f"💌 *Click any movie to get details in PM*\n\n"
+                        f"✨ To download 🎬 '{identified_title}', please send 📩 '{identified_title}' in the bot's PM 🤖"
+                        ,
                         reply_markup=InlineKeyboardMarkup(btn)
                     )
                 else:
                     await status_msg.edit(
                         f"🎬 **Detected:** {identified_title}\n"
                         f"✨ **Method:** FREE OCR APIs\n\n"
-                        f"❌ No IMDB results found\n"
+                        f"❌ No IMDB results found\n\n"
+                        f"✨ To download 🎬 '{identified_title}', please send 📩 '{identified_title}' in the bot's PM 🤖\n\n"
                         f"💡 Try searching manually: `/imdb {identified_title}`"
                     )
             else:
                 await status_msg.edit(
                     "❌ Could not identify the poster text.\n\n"
-                    "**Available OCR Methods:**\n"
-                    "✅ OCR.space (Free - 25k/month)\n"
-                    "✅ Free OCR APIs (No limits)\n"
-                    "⚙️ Google Vision (Optional - 1k/month)\n"
-                    "⚙️ API Ninjas (Optional - 10k/month)\n\n"
                     "**Tips for better results:**\n"
                     "• Use clear, high-resolution images\n"
                     "• Ensure text is readable\n"
@@ -362,7 +364,7 @@ async def identify_poster_command(client, message):
                 "• Use manual search: `/imdb movie name`\n\n"
                 "**Current API Status:**\n"
                 "🟢 OCR.space: Available (Free)\n"
-                "🟢 Free OCR APIs: Available\n"
+                "🟢 OCR APIs: Available\n"
                 f"{'🟢' if poster_identifier.google_api_key else '🟡'} Google Vision: {'Enabled' if poster_identifier.google_api_key else 'Not configured'}\n"
                 f"{'🟢' if poster_identifier.api_ninjas_key else '🟡'} API Ninjas: {'Enabled' if poster_identifier.api_ninjas_key else 'Not configured'}"
             )
@@ -375,17 +377,7 @@ async def identify_poster_command(client, message):
             "📷 **Movie Poster Identification Bot**\n\n"
             "**How to use:**\n"
             "1️⃣ Send any movie poster image\n"
-            "2️⃣ Reply to it with `/poster` or `/identify`\n"
-            "3️⃣ Bot will extract text using FREE APIs and search IMDB\n\n"
-            "**🆓 FREE OCR Services Used:**\n"
-            "🥇 OCR.space - 25,000 requests/month (No registration)\n"
-            "🥈 Free OCR APIs - Unlimited (No registration)\n"
-            "🥉 Google Vision - 1,000/month (Optional API key)\n"
-            "🏅 API Ninjas - 10,000/month (Optional API key)\n\n"
-            "**⚙️ Optional Setup for Better Accuracy:**\n"
-            "Set these environment variables:\n"
-            "• `GOOGLE_VISION_API_KEY` - For Google Cloud Vision\n"
-            "• `API_NINJAS_KEY` - For API Ninjas OCR\n\n"
+            "2️⃣ Reply to it with `/poster` or `/identify`\n\n"
             "📖 **Manual search:** `/imdb movie name`"
         )
 
@@ -413,7 +405,14 @@ async def imdb_search(client, message):
 
 @Client.on_callback_query(filters.regex('^imdb'))
 async def imdb_callback(bot: Client, quer_y: CallbackQuery):
-    i, movie = quer_y.data.split('#')
+    callback_data = quer_y.data.split('#')
+    i = callback_data[0]
+    movie = callback_data[1]
+    user_id = int(callback_data[2]) if len(callback_data) > 2 else quer_y.from_user.id
+    
+    # Get the original identified title if available
+    original_identified_title = identified_titles.get(user_id, "Unknown")
+    
     imdb = await get_poster(query=movie, id=True)
     btn = [
             [
@@ -458,6 +457,38 @@ async def imdb_callback(bot: Client, quer_y: CallbackQuery):
         )
     else:
         caption = "No Results"
+    
+    # Send private message to user with the identified title
+    try:
+        movie_title = imdb.get('title', 'Unknown Movie') if imdb else 'Unknown Movie'
+        
+        pm_message = f"🎬 **Movie Selected:** {movie_title}\n\n"
+        pm_message += f"🔍 **Originally Identified From Poster:** {original_identified_title}\n"
+        pm_message += f"🔗 **IMDB Link:** {imdb.get('url', 'N/A') if imdb else 'N/A'}\n"
+        pm_message += f"⭐ **Rating:** {imdb.get('rating', 'N/A') if imdb else 'N/A'}/10\n"
+        pm_message += f"📅 **Year:** {imdb.get('year', 'N/A') if imdb else 'N/A'}\n"
+        pm_message += f"🎭 **Genres:** {imdb.get('genres', 'N/A') if imdb else 'N/A'}\n"
+        pm_message += f"⏱️ **Runtime:** {imdb.get('runtime', 'N/A') if imdb else 'N/A'} min\n\n"
+        pm_message += f"📝 **Plot:** {imdb.get('plot', 'N/A') if imdb else 'N/A'}\n\n"
+        pm_message += f"✨ **This movie was automatically identified from your poster!**"
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=pm_message,
+            disable_web_page_preview=False
+        )
+        
+        # Clean up stored title after sending
+        if user_id in identified_titles:
+            del identified_titles[user_id]
+        
+        # Show success notification
+        await quer_y.answer("✅ Movie details sent to your PM!", show_alert=False)
+        
+    except Exception as pm_error:
+        logger.error(f"Failed to send PM: {pm_error}")
+        await quer_y.answer("⚠️ Please start the bot in PM first to receive movie details", show_alert=True)
+    
     if imdb.get('poster'):
         try:
             await quer_y.message.reply_photo(photo=imdb['poster'], caption=caption, reply_markup=InlineKeyboardMarkup(btn))
@@ -471,7 +502,6 @@ async def imdb_callback(bot: Client, quer_y: CallbackQuery):
         await quer_y.message.delete()
     else:
         await quer_y.message.edit(caption, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=False)
-    await quer_y.answer()
 
 @Client.on_callback_query(filters.regex('^close_data'))
 async def close_callback(bot: Client, query: CallbackQuery):
@@ -552,18 +582,16 @@ async def who_is(client, message):
     await status_message.delete()
 
 # Help command to show new features
-@Client.on_message(filters.command(['help', 'start']))
+@Client.on_message(filters.command(['pohelp']))
 async def help_command(client, message):
     help_text = """
 🤖 **Movie Bot - FREE OCR Poster Identification**
 
 **📋 Commands:**
-🆔 `/id` - Get chat/user ID information
 🎬 `/imdb <movie name>` - Search movie on IMDB
 🔍 `/search <movie name>` - Same as /imdb
 📷 `/poster` or `/identify` - Reply to image to identify movie poster
-👤 `/info` - Get detailed user information
-❓ `/help` - Show this help message
+❓ `/pohelp` - Show this help message
 
 **🎯 Poster Identification Feature:**
 Send `/poster` or `/identify` by replying to any movie poster image:
@@ -571,19 +599,6 @@ Send `/poster` or `/identify` by replying to any movie poster image:
 2. 🎬 Identifies movie title automatically
 3. 📽️ Searches IMDB and shows results
 4. 📋 Displays detailed movie information
-
-**🆓 FREE OCR Services (No API Keys Needed):**
-🥇 **OCR.space** - 25,000 requests/month
-🥈 **Free OCR APIs** - Unlimited usage
-🥉 **Google Vision** - 1,000/month (Optional setup)
-🏅 **API Ninjas** - 10,000/month (Optional setup)
-
-**⚙️ Optional Enhanced Setup:**
-Create `.env` file or set environment variables:
-```
-GOOGLE_VISION_API_KEY=your_google_api_key
-API_NINJAS_KEY=your_api_ninjas_key
-```
 
 **💡 Tips for Better Results:**
 • Use high-resolution, clear poster images

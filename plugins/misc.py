@@ -9,7 +9,9 @@ from datetime import datetime
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import logging
 import json
-
+# These are imported conditionally within functions:
+import pytesseract  # For Tesseract OCR
+from PIL import Image, ImageEnhance, ImageFilter  # For image processing
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 

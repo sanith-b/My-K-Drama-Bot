@@ -10,7 +10,6 @@ from logging_helper import LOGGER
 from .pm_filter import auto_filter 
 from Script import script
 from datetime import datetime
-from database.refer import referdb
 from database.topdb import silentdb
 from pyrogram.enums import ParseMode, ChatType
 from pyrogram import Client, filters, enums
@@ -37,49 +36,7 @@ async def start(client, message):
         await message.reply_text(f"🚧 Currently upgrading… Will return soon 🔜", disable_web_page_preview=True)
         return
     m = message
-    if len(m.command) == 2 and m.command[1].startswith(('notcopy', 'sendall')):
-        _, userid, verify_id, file_id = m.command[1].split("_", 3)
-        user_id = int(userid)
-        grp_id = temp.VERIFICATIONS.get(user_id, 0)
-        settings = await get_settings(grp_id)         
-        verify_id_info = await db.get_verify_id_info(user_id, verify_id)
-        if not verify_id_info or verify_id_info["verified"]:
-            await message.reply("<b>❌ Oops! That link is gone. Try again 🔄</b>")
-            return  
-        ist_timezone = pytz.timezone('Asia/Kolkata')
-        if await db.user_verified(user_id):
-            key = "third_time_verified"
-        else:
-            key = "second_time_verified" if await db.is_user_verified(user_id) else "last_verified"
-        current_time = datetime.now(tz=ist_timezone)
-        result = await db.update_notcopy_user(user_id, {key:current_time})
-        await db.update_verify_id_info(user_id, verify_id, {"verified":True})
-        if key == "third_time_verified": 
-            num = 3 
-        else: 
-            num =  2 if key == "second_time_verified" else 1 
-        if key == "third_time_verified": 
-            msg = script.THIRDT_VERIFY_COMPLETE_TEXT
-        else:
-            msg = script.SECOND_VERIFY_COMPLETE_TEXT if key == "second_time_verified" else script.VERIFY_COMPLETE_TEXT
-        if message.command[1].startswith('sendall'):
-            verifiedfiles = f"https://telegram.me/{temp.U_NAME}?start=allfiles_{grp_id}_{file_id}"
-        else:
-            verifiedfiles = f"https://telegram.me/{temp.U_NAME}?start=file_{grp_id}_{file_id}"
-        await client.send_message(settings['log'], script.VERIFIED_LOG_TEXT.format(m.from_user.mention, user_id, datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%d %B %Y'), num))
-        btn = [[
-            InlineKeyboardButton("📂 ꜰɪʟᴇ ʀᴇᴀᴅʏ! • ᴛᴀᴘ ᴛᴏ ɢᴇᴛ ɪᴛ", url=verifiedfiles),
-        ]]
-        reply_markup=InlineKeyboardMarkup(btn)
-        dlt=await m.reply_photo(
-            photo=(VERIFY_IMG),
-            caption=msg.format(message.from_user.mention, get_readable_time(TWO_VERIFY_GAP)),
-            reply_markup=reply_markup,
-            parse_mode=enums.ParseMode.HTML
-        )
-        await asyncio.sleep(300)
-        await dlt.delete()
-        return         
+            
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         silenxbotz=await message.reply_sticker("CAACAgIAAxkBAAE5tX1oohS_GHHnWdQqxxH6sbcj2K9cRwACtA4AAnrnsEhInMQI4qVJTzYE")
         await asyncio.sleep(5)
@@ -112,47 +69,7 @@ async def start(client, message):
             parse_mode=enums.ParseMode.HTML,
         )
         return
-        
-    if message.command[1].startswith("reff_"):
-        try:
-            user_id = int(message.command[1].split("_")[1])
-        except ValueError:
-            await message.reply_text("Invalid refer!")
-            return
-        if user_id == message.from_user.id:
-            await message.reply_text("🤣 Hey Dude! You can’t refer yourself!")
-            return
-        if referdb.is_user_in_list(message.from_user.id):
-            await message.reply_text("Yᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ᴀʟʀᴇᴀᴅʏ ɪɴᴠɪᴛᴇᴅ ❗")
-            return
-        try:
-            uss = await client.get_users(user_id)
-        except Exception:
-            return 	    
-        referdb.add_user(message.from_user.id)
-        fromuse = referdb.get_refer_points(user_id) + 10
-        if fromuse == 100:
-            referdb.add_refer_points(user_id, 0) 
-            await message.reply_text(f"👥 Friend Invited Successfully {uss.mention}!")		    
-            await message.reply_text(user_id, f"🎉 You Were Invited By {message.from_user.mention}!") 	
-            seconds = 2592000
-            if seconds > 0:
-                expiry_time = datetime.datetime.now() + datetime.timedelta(seconds=seconds)
-                user_data = {"id": user_id, "expiry_time": expiry_time}
-                await db.update_user(user_data)		    
-                await client.send_message(
-                chat_id=user_id,
-                text=f"<b>Hᴇʏ {uss.mention}\n\nYᴏᴜ ɢᴏᴛ 1 ᴍᴏɴᴛʜ ᴘʀᴇᴍɪᴜᴍ sᴜʙsᴄʀɪᴘᴛɪᴏɴ ʙʏ ɪɴᴠɪᴛɪɴɢ 10 ᴜsᴇʀs ❗", disable_web_page_preview=True              
-                )
-            for admin in ADMINS:
-                await client.send_message(chat_id=admin, text=f"successfully completed!\n\nUser Name: {uss.mention}\n\nUser ID: {uss.id}!")	
-        else:
-            referdb.add_refer_points(user_id, fromuse)
-            await message.reply_text(f"🎉 You Were Invited By {uss.mention}!")
-            await client.send_message(user_id, f"🎉 You Were Invited By ☞{message.from_user.mention}!")
-        return
-        
-        
+            
     if len(message.command) == 2 and message.command[1].startswith('getfile'):
         movies = message.command[1].split("-", 1)[1] 
         movie = movies.replace('-',' ')
@@ -219,51 +136,6 @@ async def start(client, message):
     except Exception as e:
         await log_error(client, f"Got Error In Force Subscription Function.\n\n Error - {e}")
         LOGGER.error(f"Error In Fsub :- {e}")
-        
-    user_id = m.from_user.id
-    if not await db.has_premium_access(user_id):
-        try:
-            grp_id = int(grp_id)
-            user_verified = await db.is_user_verified(user_id)
-            settings = await get_settings(grp_id)
-            is_second_shortener = await db.use_second_shortener(user_id, settings.get('verify_time', TWO_VERIFY_GAP)) 
-            is_third_shortener = await db.use_third_shortener(user_id, settings.get('third_verify_time', THREE_VERIFY_GAP))
-            if settings.get("is_verify", IS_VERIFY) and (not user_verified or is_second_shortener or is_third_shortener):                
-                verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
-                await db.create_verify_id(user_id, verify_id)
-                temp.VERIFICATIONS[user_id] = grp_id
-                if message.command[1].startswith('allfiles'):
-                    verify = await get_shortlink(f"https://telegram.me/{temp.U_NAME}?start=sendall_{user_id}_{verify_id}_{file_id}", grp_id, is_second_shortener, is_third_shortener)
-                else:
-                    verify = await get_shortlink(f"https://telegram.me/{temp.U_NAME}?start=notcopy_{user_id}_{verify_id}_{file_id}", grp_id, is_second_shortener, is_third_shortener)
-                if is_third_shortener:
-                    howtodownload = settings.get('tutorial_3', TUTORIAL_3)
-                else:
-                    howtodownload = settings.get('tutorial_2', TUTORIAL_2) if is_second_shortener else settings.get('tutorial', TUTORIAL)
-                buttons = [[
-                    InlineKeyboardButton(text="♻️ ᴄʟɪᴄᴋ ʜᴇʀᴇ ᴛᴏ ᴠᴇʀɪꜰʏ ♻️", url=verify)
-                ],[
-                    InlineKeyboardButton(text="⁉️ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ ⁉️", url=howtodownload)
-                ]]
-                reply_markup=InlineKeyboardMarkup(buttons)
-                if await db.user_verified(user_id): 
-                    msg = script.THIRDT_VERIFICATION_TEXT
-                else:            
-                    msg = script.SECOND_VERIFICATION_TEXT if is_second_shortener else script.VERIFICATION_TEXT
-                n=await m.reply_text(
-                    text=msg.format(message.from_user.mention),
-                    protect_content = True,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.HTML
-                )
-                await asyncio.sleep(300) 
-                await n.delete()
-                await m.delete()
-                return
-        except Exception as e:
-            await log_error(client, f"Got Error In Verification Funtion.\n\n Error - {e}")
-            LOGGER.error(f"Error In Verification - {e}")
-            pass
     
     if data.startswith("allfiles"):
         files = temp.GETALL.get(file_id)
@@ -283,13 +155,13 @@ async def start(client, message):
                 try:
                     f_caption=SILENTX_CAPTION.format(file_name= '' if title is None else title, file_size='' if size is None else size, file_caption='' if f_caption is None else f_caption)
                 except Exception as e:
-                    logger.exception(e)
+                    LOGGER.error(e)
                     f_caption = f_caption
             if f_caption is None:
                 f_caption = clean_filename(files1.file_name) 
             if STREAM_MODE:
                 btn = [
-                    [InlineKeyboardButton('𝖦𝖾𝗇𝖾𝗋𝖺𝗍𝖾 𝖲𝗍𝗋𝖾𝗆𝗂𝗇𝗀 𝖫𝗂𝗇𝗄', callback_data=f'streamfile:{file_id}')],
+                    [InlineKeyboardButton('𝖦𝖾𝗇𝖾𝗋𝖺𝗍𝖾 𝖲𝗍𝗋𝖾𝖺𝗆𝗂𝗇𝗀 𝖫𝗂𝗇𝗄', callback_data=f'streamfile:{file_id}')],
                     [InlineKeyboardButton('𝖴𝗉𝖽𝖺𝗍𝖾 𝖢𝗁𝖺𝗇𝗇𝖾𝗅 📢', url=UPDATE_CHANNEL_LNK)]  
                 ]
             else:
@@ -319,7 +191,7 @@ async def start(client, message):
         try:
             if STREAM_MODE:
                 btn = [
-                    [InlineKeyboardButton('𝖦𝖾𝗇𝖾𝗋𝖺𝗍𝖾 𝖲𝗍𝗋𝖾𝗆𝗂𝗇𝗀 𝖫𝗂𝗇𝗄', callback_data=f'streamfile:{file_id}')],
+                    [InlineKeyboardButton('𝖦𝖾𝗇𝖾𝗋𝖺𝗍𝖾 𝖲𝗍𝗋𝖾𝖺𝗆𝗂𝗇𝗀 𝖫𝗂𝗇𝗄', callback_data=f'streamfile:{file_id}')],
                     [InlineKeyboardButton('𝖴𝗉𝖽𝖺𝗍𝖾 𝖢𝗁𝖺𝗇𝗇𝖾𝗅 📢', url=UPDATE_CHANNEL_LNK)]
              
                 ]
@@ -372,7 +244,7 @@ async def start(client, message):
         f_caption = clean_filename(files.file_name)
     if STREAM_MODE:
         btn = [
-            [InlineKeyboardButton('𝖦𝖾𝗇𝖾𝗋𝖺𝗍𝖾 𝖲𝗍𝗋𝖾𝗆𝗂𝗇𝗀 𝖫𝗂𝗇𝗄', callback_data=f'streamfile:{file_id}')],
+            [InlineKeyboardButton('𝖦𝖾𝗇𝖾𝗋𝖺𝗍𝖾 𝖲𝗍𝗋𝖾𝖺𝗆𝗂𝗇𝗀 𝖫𝗂𝗇𝗄', callback_data=f'streamfile:{file_id}')],
             [InlineKeyboardButton('𝖴𝗉𝖽𝖺𝗍𝖾 𝖢𝗁𝖺𝗇𝗇𝖾𝗅 📢', url=UPDATE_CHANNEL_LNK)]
         ]
     else:
@@ -556,124 +428,6 @@ async def connect_group(client, message):
         except:
             await message.reply_text("Invalid group ID or error occurred.")
 
-@Client.on_message((filters.command(["request", "Request"]) | filters.regex("#request") | filters.regex("#Request")) & filters.group)
-async def requests(bot, message):
-    bot_id = client.me.id
-    maintenance_mode = await db.get_maintenance_status(bot_id)
-    if maintenance_mode and message.from_user.id not in ADMINS:
-        await message.reply_text(f"🚧 Currently upgrading… Will return soon 🔜", disable_web_page_preview=True)
-        return
-    if REQST_CHANNEL is None or SUPPORT_CHAT_ID is None: return # Must add REQST_CHANNEL and SUPPORT_CHAT_ID to use this feature
-    if message.reply_to_message and SUPPORT_CHAT_ID == message.chat.id:
-        chat_id = message.chat.id
-        reporter = str(message.from_user.id)
-        mention = message.from_user.mention
-        success = True
-        content = message.reply_to_message.text
-        try:
-            if REQST_CHANNEL is not None:
-                btn = [[
-                        InlineKeyboardButton('📝 Request Details', url=f"{message.reply_to_message.link}"),
-                        InlineKeyboardButton('🛠️ Open Options', callback_data=f'show_option#{reporter}')
-                      ]]
-                reported_post = await bot.send_message(chat_id=REQST_CHANNEL, text=f"<b>📄 Request: <u>{content}</u> \n👥 Reported by: {mention} | ID: {reporter}\n\n</b>", reply_markup=InlineKeyboardMarkup(btn))
-                success = True
-            elif len(content) >= 3:
-                for admin in ADMINS:
-                    btn = [[
-                        InlineKeyboardButton('📝 Request Details', url=f"{message.reply_to_message.link}"),
-                        InlineKeyboardButton('🛠️ Open Options', callback_data=f'show_option#{reporter}')
-                      ]]
-                    reported_post = await bot.send_message(chat_id=admin, text=f"<b>📄 Request: <u>{content}</u> \n👥 Reported by: {mention} | ID: {reporter}\n\n</b>", reply_markup=InlineKeyboardMarkup(btn))
-                    success = True
-            else:
-                if len(content) < 3:
-                    await message.reply_text("<b>✏️ Type at least 3 characters for your request!</b>")
-            if len(content) < 3:
-                success = False
-        except Exception as e:
-            await message.reply_text(f"Error: {e}")
-            pass
-        
-    elif SUPPORT_CHAT_ID == message.chat.id:
-        chat_id = message.chat.id
-        reporter = str(message.from_user.id)
-        mention = message.from_user.mention
-        success = True
-        content = message.text
-        keywords = ["#request", "/request", "#Request", "/Request"]
-        for keyword in keywords:
-            if keyword in content:
-                content = content.replace(keyword, "")
-        try:
-            if REQST_CHANNEL is not None and len(content) >= 3:
-                btn = [[
-                        InlineKeyboardButton('📝 Request Details', url=f"{message.link}"),
-                        InlineKeyboardButton('🛠️ Open Options', callback_data=f'show_option#{reporter}')
-                      ]]
-                reported_post = await bot.send_message(chat_id=REQST_CHANNEL, text=f"<b>📄 Request: <u>{content}</u> \n👥 Reported by: {mention} | ID: {reporter}\n\n</b>", reply_markup=InlineKeyboardMarkup(btn))
-                success = True
-            elif len(content) >= 3:
-                for admin in ADMINS:
-                    btn = [[
-                        InlineKeyboardButton('📝 Request Details', url=f"{message.link}"),
-                        InlineKeyboardButton('🛠️ Open Options', callback_data=f'show_option#{reporter}')
-                      ]]
-                    reported_post = await bot.send_message(chat_id=admin, text=f"<b>📄 Request: <u>{content}</u> \n👥 Reported by: {mention} | ID: {reporter}\n\n</b>", reply_markup=InlineKeyboardMarkup(btn))
-                    success = True
-            else:
-                if len(content) < 3:
-                    await message.reply_text("<b>✏️ Type at least 3 characters for your request!</b>")
-            if len(content) < 3:
-                success = False
-        except Exception as e:
-            await message.reply_text(f"Error: {e}")
-            pass
-    
-    elif SUPPORT_CHAT_ID == message.chat.id:
-        chat_id = message.chat.id
-        reporter = str(message.from_user.id)
-        mention = message.from_user.mention
-        success = True
-        content = message.text
-        keywords = ["#request", "/request", "#Request", "/Request"]
-        for keyword in keywords:
-            if keyword in content:
-                content = content.replace(keyword, "")
-        try:
-            if REQST_CHANNEL is not None and len(content) >= 3:
-                btn = [[
-                        InlineKeyboardButton('📝 Request Details', url=f"{message.link}"),
-                        InlineKeyboardButton('🛠️ Open Options', callback_data=f'show_option#{reporter}')
-                      ]]
-                reported_post = await bot.send_message(chat_id=REQST_CHANNEL, text=f"<b>📄 Request: <u>{content}</u> \n👥 Reported by: {mention} | ID: {reporter}\n\n</b>", reply_markup=InlineKeyboardMarkup(btn))
-                success = True
-            elif len(content) >= 3:
-                for admin in ADMINS:
-                    btn = [[
-                        InlineKeyboardButton('📝 Request Details', url=f"{message.link}"),
-                        InlineKeyboardButton('🛠️ Open Options', callback_data=f'show_option#{reporter}')
-                      ]]
-                    reported_post = await bot.send_message(chat_id=admin, text=f"<b>📄 Request: <u>{content}</u> \n👥 Reported by: {mention} | ID: {reporter}\n\n</b>", reply_markup=InlineKeyboardMarkup(btn))
-                    success = True
-            else:
-                if len(content) < 3:
-                    await message.reply_text("<b>✏️ Type at least 3 characters for your request!</b>")
-            if len(content) < 3:
-                success = False
-        except Exception as e:
-            await message.reply_text(f"Error: {e}")
-            pass
-    else:
-        success = False    
-    if success:
-        link = await bot.create_chat_invite_link(int(REQST_CHANNEL))
-        btn = [[
-                InlineKeyboardButton('📢 Join Channel', url=link.invite_link),
-                InlineKeyboardButton('📝 Request Details', url=f"{reported_post.link}")
-              ]]
-        await message.reply_text("<b>📝 Request Recorded!</b>", reply_markup=InlineKeyboardMarkup(btn))
-   
 @Client.on_message(filters.command("send") & filters.user(ADMINS))
 async def send_msg(bot, message):
     if message.reply_to_message:
@@ -752,7 +506,7 @@ async def topsearch_callback(client, callback_query):
     await callback_query.answer()
 
 @Client.on_message(filters.command('top_search'))
-async def top(_, message):
+async def top(client, message):
     bot_id = client.me.id
     maintenance_mode = await db.get_maintenance_status(bot_id)
     if maintenance_mode and message.from_user.id not in ADMINS:
@@ -781,7 +535,6 @@ async def top(_, message):
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True, placeholder="Most searches of the day")
     await message.reply_text(f"<b>📊 Trending Searches</b>", reply_markup=reply_markup)
 
-    
 @Client.on_message(filters.command('trendlist'))
 async def trendlist(client, message):
     bot_id = client.me.id
@@ -910,21 +663,9 @@ async def reset_group_command(client, message):
         InlineKeyboardButton('❌ Close', callback_data='close_data')
     ]]
     reply_markup = InlineKeyboardMarkup(btn)
-    await save_group_settings(grp_id, 'shortner', SHORTENER_WEBSITE)
-    await save_group_settings(grp_id, 'api', SHORTENER_API)
-    await save_group_settings(grp_id, 'shortner_two', SHORTENER_WEBSITE2)
-    await save_group_settings(grp_id, 'api_two', SHORTENER_API2)
-    await save_group_settings(grp_id, 'shortner_three', SHORTENER_WEBSITE3)
-    await save_group_settings(grp_id, 'api_three', SHORTENER_API3)
-    await save_group_settings(grp_id, 'verify_time', TWO_VERIFY_GAP)
-    await save_group_settings(grp_id, 'third_verify_time', THREE_VERIFY_GAP)
     await save_group_settings(grp_id, 'template', IMDB_TEMPLATE)
-    await save_group_settings(grp_id, 'tutorial', TUTORIAL)
-    await save_group_settings(grp_id, 'tutorial_2', TUTORIAL_2)
-    await save_group_settings(grp_id, 'tutorial_3', TUTORIAL_3)
     await save_group_settings(grp_id, 'caption', CUSTOM_FILE_CAPTION)
     await save_group_settings(grp_id, 'log', LOG_VR_CHANNEL)
-    await save_group_settings(grp_id, 'is_verify', IS_VERIFY)
     await save_group_settings(grp_id, 'fsub_id', AUTH_CHANNEL)
     await message.reply_text('✅ Group Settings Successfully Reset!')
 
@@ -951,13 +692,13 @@ async def set_fsub(client, message):
     try:
         chat = await client.get_chat(channel_id)
     except Exception as e:
-        return await message.reply_text(f"<b><code>{channel_id}</code>Invalid! Please Check <a href=https://t.me/{temp.B_LINK} BOT</a> Is Admin in That Channel\n\n<code>{e}</code></b>")
+        return await message.reply_text(f"<b><code>{channel_id}</code>Invalid! Please Check <a href=https://t.me/{temp.B_LINK}> BOT</a> Is Admin in That Channel\n\n<code>{e}</code></b>")
     if chat.type != enums.ChatType.CHANNEL:
         return await message.reply_text(f"🫥 <code>{channel_id}</code>  Not a Channel! Send Channel ID Only</b>")
     await save_group_settings(grp_id, 'fsub_id', [channel_id])
     mention = message.from_user.mention
     await client.send_message(LOG_API_CHANNEL, f"#Fsub_Channel_set\n\nUser - {mention} Set The Force Channel For {title}:\n\nFSUB Channel Name - {chat.title}\nChannel ID - `{channel_id}`")
-    await message.reply_text(f"<b>🎯 Successfully Set Force Sub Channel for {title}\n\n📌 Channel Name - {chat.title}\nɪ📌 Channel ID - <code>{channel_id}</code></b>")
+    await message.reply_text(f"<b>🎯 Successfully Set Force Sub Channel for {title}\n\n📌 Channel Name - {chat.title}\n📌 Channel ID - <code>{channel_id}</code></b>")
 
 @Client.on_message(filters.command('remove_fsub'))
 async def remove_fsub(client, message):
@@ -974,7 +715,7 @@ async def remove_fsub(client, message):
     if not await is_check_admin(client, grp_id, message.from_user.id):
         return await message.reply_text('<b>🚫 You’re Not an Admin!</b>')
     settings = await get_settings(grp_id)
-    if (c in AUTH_CHANNEL for c in settings['fsub_id']):
+    if any(c in AUTH_CHANNEL for c in settings['fsub_id']):
         await message.reply_text("<b>⚠️ No Force Sub Channel Set... <code>[ᴅᴇғᴀᴜʟᴛ ᴀᴄᴛɪᴠᴀᴛᴇ]</code></b>")
     else:
         await save_group_settings(grp_id, 'fsub_id', AUTH_CHANNEL)
@@ -998,7 +739,7 @@ async def all_settings(client, message):
         title = message.chat.title
         
         if not await is_check_admin(client, grp_id, message.from_user.id):
-            return await message.reply_text('<b>🚫 You’re Not an Admin!</b>') 
+        return await message.reply_text('<b>🚫 You’re Not an Admin!</b>')
         
         settings = await get_settings(grp_id)
         nbbotz = f"""<b>⚙️ Your Settings For - {title}</b>
@@ -1090,4 +831,4 @@ async def reset_all_settings(client, message):
         )
     except Exception as e:
         LOGGER.error(f"Error Processing Reset All Settings Command: {str(e)}")
-        await message.reply("<b>🚫 Oops! Couldn’t Delete Settings. ⏳ Try Again Later.</b>", quote=True)       
+        await message.reply("<b>🚫 Oops! Couldn't Delete Settings. ⏳ Try Again Later.</b>", quote=True)

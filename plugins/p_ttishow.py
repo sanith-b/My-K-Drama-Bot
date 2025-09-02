@@ -14,7 +14,9 @@ from time import time
 from bot import botStartTime
 from logging_helper import LOGGER
 
-
+# Constants
+DB_SIZE_LIMIT_MB = 512  # Change this as needed
+DB_SIZE = DB_SIZE_LIMIT_MB * 1024 * 1024
 """-----------------------------------------https://t.me/SilentXBotz--------------------------------------"""
 
 @Client.on_message(filters.new_chat_members & filters.group)

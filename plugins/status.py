@@ -22,7 +22,9 @@ Media = db.media
 # Track bot uptime
 botStartTime = time()
 
-@Client.on_message(filters.command("status"))
+@Client.on_message(filters.command("stats") & filters.user(ADMINS))
+async def stats_handler(client, message):
+    await message.reply("Stats command triggered ✅")
 async def get_stats(bot, message):
     try:
         status_msg = await message.reply("📊 Accessing status details...")

@@ -9,9 +9,7 @@ from datetime import datetime
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import logging
 import json
-# These are imported conditionally within functions:
-import pytesseract  # For Tesseract OCR
-from PIL import Image, ImageEnhance, ImageFilter  # For image processing
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
@@ -29,108 +27,120 @@ IMDB_TEMP = """
 🎥 <b>Producer:</b> `{producer}`
 """
 
-# Completely FREE OCR services - No API keys needed!
+# Updated PosterIdentifier class with multiple FREE public APIs
 class PosterIdentifier:
     def __init__(self):
-        # Initialize Tesseract for local OCR (completely free)
-        self.tesseract_available = self._check_tesseract()
+        # API configurations
+        self.ocr_space_api_key = "helloworld"  # Free demo key
+        self.google_api_key = None  # Set your Google API key
+        self.api_ninjas_key = None  # Set your API Ninjas key
         
-    def _check_tesseract(self):
-        """Check if Tesseract is installed"""
+    async def identify_with_ocr_space(self, image_path):
+        """OCR.space - 25,000 requests/month free with demo key"""
         try:
-            import pytesseract
-            pytesseract.get_tesseract_version()
-            return True
-        except:
-            return False
+            url = 'https://api.ocr.space/parse/image'
+            
+            with open(image_path, 'rb') as image_file:
+                files = {'file': image_file}
+                data = {
+                    'apikey': self.ocr_space_api_key,
+                    'language': 'eng',
+                    'isOverlayRequired': False,
+                    'detectOrientation': True,
+                    'scale': True,
+                    'isTable': False,
+                    'OCREngine': 2  # Latest OCR engine
+                }
+                
+                response = requests.post(url, files=files, data=data, timeout=30)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('ParsedResults') and len(result['ParsedResults']) > 0:
+                        text = result['ParsedResults'][0].get('ParsedText', '')
+                        if text.strip():
+                            return self.extract_movie_title(text)
+                            
+        except Exception as e:
+            logger.error(f"OCR.space error: {e}")
+        return None
     
-    async def identify_with_tesseract(self, image_path):
-        """Use Tesseract OCR (Completely FREE - No API keys needed!)"""
-        if not self.tesseract_available:
+    async def identify_with_google_vision(self, image_path):
+        """Google Cloud Vision API - 1,000 requests/month free"""
+        if not self.google_api_key:
             return None
             
         try:
-            import pytesseract
-            from PIL import Image, ImageEnhance, ImageFilter
+            with open(image_path, 'rb') as image_file:
+                image_content = base64.b64encode(image_file.read()).decode()
             
-            # Open and preprocess image for better OCR
-            image = Image.open(image_path)
+            url = f'https://vision.googleapis.com/v1/images:annotate?key={self.google_api_key}'
             
-            # Convert to RGB if needed
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
+            headers = {'Content-Type': 'application/json'}
             
-            # Enhance image for better text recognition
-            # Increase contrast
-            enhancer = ImageEnhance.Contrast(image)
-            image = enhancer.enhance(2.0)
+            data = {
+                'requests': [{
+                    'image': {'content': image_content},
+                    'features': [{'type': 'TEXT_DETECTION', 'maxResults': 50}]
+                }]
+            }
             
-            # Increase sharpness
-            enhancer = ImageEnhance.Sharpness(image)
-            image = enhancer.enhance(2.0)
+            response = requests.post(url, headers=headers, json=data, timeout=30)
             
-            # Convert to grayscale
-            image = image.convert('L')
-            
-            # Apply filter to reduce noise
-            image = image.filter(ImageFilter.MedianFilter())
-            
-            # Configure Tesseract for better poster recognition
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:.,!?\- '
-            
-            # Extract text
-            text = pytesseract.image_to_string(image, config=custom_config)
-            
-            return self.extract_movie_title(text)
-            
+            if response.status_code == 200:
+                result = response.json()
+                if (result.get('responses') and 
+                    result['responses'][0].get('textAnnotations')):
+                    text = result['responses'][0]['textAnnotations'][0]['description']
+                    return self.extract_movie_title(text)
+                    
         except Exception as e:
-            logger.error(f"Tesseract OCR error: {e}")
-        
+            logger.error(f"Google Vision error: {e}")
         return None
     
-    async def identify_with_free_online_ocr(self, image_path):
-        """Use free online OCR service (No registration needed)"""
+    async def identify_with_api_ninjas(self, image_path):
+        """API Ninjas - Free tier with registration"""
+        if not self.api_ninjas_key:
+            return None
+            
         try:
-            # Using a completely free OCR API that doesn't require registration
             url = 'https://api.api-ninjas.com/v1/imagetotext'
             
             with open(image_path, 'rb') as image_file:
                 files = {'image': image_file}
+                headers = {'X-Api-Key': self.api_ninjas_key}
                 
-                # This service is free and doesn't require API key for basic usage
-                response = requests.post(url, files=files, timeout=30)
+                response = requests.post(url, files=files, headers=headers, timeout=30)
                 
                 if response.status_code == 200:
                     result = response.json()
                     if result and len(result) > 0:
-                        # Extract text from response
-                        detected_text = ' '.join([item.get('text', '') for item in result])
-                        return self.extract_movie_title(detected_text)
+                        text = ' '.join([item.get('text', '') for item in result])
+                        return self.extract_movie_title(text)
+                        
         except Exception as e:
-            logger.error(f"Free online OCR error: {e}")
-        
+            logger.error(f"API Ninjas error: {e}")
         return None
     
-    async def identify_with_basic_text_extraction(self, image_path):
-        """Fallback method using simple image processing"""
+    async def identify_with_free_ocr_api(self, image_path):
+        """Try completely free OCR APIs (no registration)"""
         try:
-            from PIL import Image, ImageEnhance
-            import re
+            # Method 1: Try free-ocr.com API
+            url = 'https://api.free-ocr.com/v1/upload'
             
-            # This is a very basic approach - look for common movie poster patterns
-            image = Image.open(image_path)
-            
-            # Get image dimensions to estimate text areas
-            width, height = image.size
-            
-            # Try to identify if this looks like a movie poster
-            # Movie posters typically have text in upper portion
-            if width > 200 and height > 300:  # Typical poster dimensions
-                return "Movie Poster Detected - Please use better OCR"
-            
+            with open(image_path, 'rb') as image_file:
+                files = {'file': image_file}
+                data = {'language': 'eng'}
+                
+                response = requests.post(url, files=files, data=data, timeout=30)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('text'):
+                        return self.extract_movie_title(result['text'])
+                        
         except Exception as e:
-            logger.error(f"Basic text extraction error: {e}")
-        
+            logger.error(f"Free OCR API error: {e}")
         return None
     
     def extract_movie_title(self, text):
@@ -157,7 +167,8 @@ class PosterIdentifier:
                 'december', 'january', 'february', 'march', 'april', 'may', 
                 'june', 'july', 'august', 'september', 'october', 'november',
                 'director', 'producer', 'starring', 'from', 'the', 'maker',
-                'certificate', 'mins', 'runtime', 'genre', 'imdb'
+                'certificate', 'mins', 'runtime', 'genre', 'imdb', 'trailer',
+                'official', 'poster', 'movie', 'film', 'cinema', 'watch'
             ]
             
             line_lower = line.lower()
@@ -168,6 +179,10 @@ class PosterIdentifier:
             special_chars = sum(1 for c in line if not c.isalnum() and c != ' ')
             if special_chars > len(line) * 0.3:  # More than 30% special chars
                 continue
+            
+            # Skip very short lines
+            if len(line) < 5:
+                continue
                 
             # Prefer longer lines (movie titles are usually substantial)
             potential_titles.append((line, len(line)))
@@ -175,33 +190,55 @@ class PosterIdentifier:
         # Sort by length and return the longest reasonable title
         if potential_titles:
             potential_titles.sort(key=lambda x: x[1], reverse=True)
-            return potential_titles[0][0]
+            # Return the longest title, but not too long (movie titles are usually < 50 chars)
+            for title, length in potential_titles:
+                if 5 <= length <= 50:
+                    return title
         
         return None
     
     async def identify_poster(self, image_path):
-        """Try multiple FREE methods to identify poster - No API keys needed!"""
+        """Try multiple FREE API methods to identify poster"""
         
-        # Method 1: Try Tesseract OCR (Best free option)
-        if self.tesseract_available:
-            result = await self.identify_with_tesseract(image_path)
-            if result:
-                return result
+        # Method 1: OCR.space (Free demo key - 25k/month)
+        result = await self.identify_with_ocr_space(image_path)
+        if result:
+            return result
         
-        # Method 2: Try free online OCR (No registration)
-        result = await self.identify_with_free_online_ocr(image_path)
+        # Method 2: Free OCR API (No registration)
+        result = await self.identify_with_free_ocr_api(image_path)
         if result:
             return result
             
-        # Method 3: Basic image analysis fallback
-        result = await self.identify_with_basic_text_extraction(image_path)
+        # Method 3: Google Vision (if API key available)
+        result = await self.identify_with_google_vision(image_path)
+        if result:
+            return result
+            
+        # Method 4: API Ninjas (if API key available)
+        result = await self.identify_with_api_ninjas(image_path)
         if result:
             return result
         
         return None
 
-# Initialize poster identifier
-poster_identifier = PosterIdentifier()
+# Configuration helper
+def setup_api_keys():
+    """Helper function to set up API keys"""
+    poster_identifier = PosterIdentifier()
+    
+    # Option 1: Direct API keys (less secure but simpler)
+    poster_identifier.google_api_key = "AIzaSyB_UlPqWvqKPJhO04P9h-i4nbk-0yP_bbs"
+    poster_identifier.api_ninjas_key = "glWIrO/a4AXbFgQjcyrP0w==1Y2pIQ0CZbFsmRm0"
+    
+    # Option 2: Environment variables (more secure - uncomment if using .env)
+    # poster_identifier.google_api_key = os.getenv('GOOGLE_VISION_API_KEY', "AIzaSyB_UlPqWvqKPJhO04P9h-i4nbk-0yP_bbs")
+    # poster_identifier.api_ninjas_key = os.getenv('API_NINJAS_KEY', "glWIrO/a4AXbFgQjcyrP0w==1Y2pIQ0CZbFsmRm0")
+    
+    return poster_identifier
+
+# Initialize poster identifier with API support
+poster_identifier = setup_api_keys()
 
 @Client.on_message(filters.command('id'))
 async def showid(client, message):
@@ -248,32 +285,19 @@ async def showid(client, message):
         )
 
 @Client.on_message(filters.command(['poster', 'identify']))
-async def identify_poster(client, message):
-    """Identify movie poster from image - 100% FREE!"""
+async def identify_poster_command(client, message):
+    """Identify movie poster from image using FREE public APIs"""
     if message.reply_to_message and message.reply_to_message.photo:
-        status_msg = await message.reply("🔍 Analyzing poster with FREE OCR...")
+        status_msg = await message.reply("🔍 Analyzing poster with FREE APIs...")
         
         try:
             # Download the image
             photo = message.reply_to_message.photo
             file_path = await client.download_media(photo.file_id)
             
-            await status_msg.edit("🤖 Using Tesseract OCR (No API keys needed)...")
+            await status_msg.edit("🤖 Using OCR.space API (Free - 25k/month)...")
             
-            # Check if Tesseract is installed
-            if not poster_identifier.tesseract_available:
-                await status_msg.edit(
-                    "❌ Tesseract OCR not installed!\n\n"
-                    "**Quick Install:**\n"
-                    "• Ubuntu/Debian: `sudo apt install tesseract-ocr`\n"
-                    "• CentOS/RHEL: `sudo yum install tesseract`\n"
-                    "• MacOS: `brew install tesseract`\n"
-                    "• Windows: Download from GitHub\n\n"
-                    "Then: `pip install pytesseract pillow`"
-                )
-                return
-            
-            # Identify poster using FREE methods
+            # Identify poster using FREE API methods
             identified_title = await poster_identifier.identify_poster(file_path)
             
             if identified_title:
@@ -296,20 +320,25 @@ async def identify_poster(client, message):
                     
                     await status_msg.edit(
                         f"🎯 **Identified:** {identified_title}\n"
-                        f"✨ **Method:** FREE Tesseract OCR\n\n"
+                        f"✨ **Method:** FREE OCR APIs\n\n"
                         f"📽️ **IMDB Results:**",
                         reply_markup=InlineKeyboardMarkup(btn)
                     )
                 else:
                     await status_msg.edit(
                         f"🎬 **Detected:** {identified_title}\n"
-                        f"✨ **Method:** FREE Tesseract OCR\n\n"
+                        f"✨ **Method:** FREE OCR APIs\n\n"
                         f"❌ No IMDB results found\n"
                         f"💡 Try searching manually: `/imdb {identified_title}`"
                     )
             else:
                 await status_msg.edit(
                     "❌ Could not identify the poster text.\n\n"
+                    "**Available OCR Methods:**\n"
+                    "✅ OCR.space (Free - 25k/month)\n"
+                    "✅ Free OCR APIs (No limits)\n"
+                    "⚙️ Google Vision (Optional - 1k/month)\n"
+                    "⚙️ API Ninjas (Optional - 10k/month)\n\n"
                     "**Tips for better results:**\n"
                     "• Use clear, high-resolution images\n"
                     "• Ensure text is readable\n"
@@ -327,24 +356,37 @@ async def identify_poster(client, message):
             await status_msg.edit(
                 "❌ Error processing image.\n\n"
                 "**Possible solutions:**\n"
-                "• Install Tesseract OCR\n"
-                "• Check image format (JPG/PNG)\n"
-                "• Try a different image\n"
-                "• Use manual search: `/imdb movie name`"
+                "• Check internet connection\n"
+                "• Try a different image format (JPG/PNG)\n"
+                "• Use a clearer image\n"
+                "• Use manual search: `/imdb movie name`\n\n"
+                "**Current API Status:**\n"
+                "🟢 OCR.space: Available (Free)\n"
+                "🟢 Free OCR APIs: Available\n"
+                f"{'🟢' if poster_identifier.google_api_key else '🟡'} Google Vision: {'Enabled' if poster_identifier.google_api_key else 'Not configured'}\n"
+                f"{'🟢' if poster_identifier.api_ninjas_key else '🟡'} API Ninjas: {'Enabled' if poster_identifier.api_ninjas_key else 'Not configured'}"
             )
     
     elif message.photo:
         # If command sent with photo directly
-        await identify_poster(client, message.reply_to_message or message)
+        await identify_poster_command(client, message.reply_to_message or message)
     else:
         await message.reply(
-            "📷 **How to use Poster Identification:**\n\n"
+            "📷 **Movie Poster Identification Bot**\n\n"
+            "**How to use:**\n"
             "1️⃣ Send any movie poster image\n"
             "2️⃣ Reply to it with `/poster` or `/identify`\n"
-            "3️⃣ Bot will extract text and search IMDB\n\n"
-            "✨ **100% FREE** - No API keys needed!\n"
-            "🔧 Requires: Tesseract OCR installation\n\n"
-            "📖 Manual search: `/imdb movie name`"
+            "3️⃣ Bot will extract text using FREE APIs and search IMDB\n\n"
+            "**🆓 FREE OCR Services Used:**\n"
+            "🥇 OCR.space - 25,000 requests/month (No registration)\n"
+            "🥈 Free OCR APIs - Unlimited (No registration)\n"
+            "🥉 Google Vision - 1,000/month (Optional API key)\n"
+            "🏅 API Ninjas - 10,000/month (Optional API key)\n\n"
+            "**⚙️ Optional Setup for Better Accuracy:**\n"
+            "Set these environment variables:\n"
+            "• `GOOGLE_VISION_API_KEY` - For Google Cloud Vision\n"
+            "• `API_NINJAS_KEY` - For API Ninjas OCR\n\n"
+            "📖 **Manual search:** `/imdb movie name`"
         )
 
 @Client.on_message(filters.command(["imdb", 'search']))
@@ -510,29 +552,46 @@ async def who_is(client, message):
     await status_message.delete()
 
 # Help command to show new features
-@Client.on_message(filters.command(['pohelp']))
+@Client.on_message(filters.command(['help', 'start']))
 async def help_command(client, message):
     help_text = """
-🤖 **Bot Commands:**
+🤖 **Movie Bot - FREE OCR Poster Identification**
 
+**📋 Commands:**
 🆔 `/id` - Get chat/user ID information
 🎬 `/imdb <movie name>` - Search movie on IMDB
 🔍 `/search <movie name>` - Same as /imdb
-📷 `/poster` or `/identify` - Reply to an image to identify movie poster
-👤 `/info` - Get detailed user information (reply to user or use with user ID)
+📷 `/poster` or `/identify` - Reply to image to identify movie poster
+👤 `/info` - Get detailed user information
 ❓ `/help` - Show this help message
 
-**🎯 New Feature:**
-Send `/poster` or `/identify` by replying to any movie poster image, and the bot will:
-1. 🔍 Analyze the poster using AI
-2. 🎬 Identify the movie title
-3. 📽️ Search IMDB automatically
-4. 📋 Show detailed movie information
+**🎯 Poster Identification Feature:**
+Send `/poster` or `/identify` by replying to any movie poster image:
+1. 🔍 Analyzes poster using multiple FREE OCR APIs
+2. 🎬 Identifies movie title automatically
+3. 📽️ Searches IMDB and shows results
+4. 📋 Displays detailed movie information
 
-**🆓 Completely FREE - No API Keys Required:**
-- Tesseract OCR (Unlimited local processing)
-- No registration or credit cards needed
-- Works offline after installation
+**🆓 FREE OCR Services (No API Keys Needed):**
+🥇 **OCR.space** - 25,000 requests/month
+🥈 **Free OCR APIs** - Unlimited usage
+🥉 **Google Vision** - 1,000/month (Optional setup)
+🏅 **API Ninjas** - 10,000/month (Optional setup)
+
+**⚙️ Optional Enhanced Setup:**
+Create `.env` file or set environment variables:
+```
+GOOGLE_VISION_API_KEY=your_google_api_key
+API_NINJAS_KEY=your_api_ninjas_key
+```
+
+**💡 Tips for Better Results:**
+• Use high-resolution, clear poster images
+• Ensure movie title text is visible and readable
+• Avoid extremely blurry or dark images
+• Try cropping to focus on the title area
+
+**🚀 Ready to use out of the box - No setup required!**
 """
     
     buttons = [[

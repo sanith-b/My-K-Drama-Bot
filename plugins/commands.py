@@ -167,42 +167,60 @@ async def start(client, message):
     except:
         _, grp_id, file_id = "", 0, data
 
-    if not await db.has_premium_access(message.from_user.id): 
-        try:
-            btn = []
-            chat = int(data.split("_", 2)[1])
-            settings      = await get_settings(chat)
-            fsub_channels = list(dict.fromkeys((settings.get('fsub', []) if settings else [])+ AUTH_CHANNELS)) 
+if len(message.command) == 2 and message.command[1].startswith('getfile'):
+    movies = message.command[1].split("-", 1)[1] 
+    movie = movies.replace('-', ' ')
+    message.text = movie 
+    await auto_filter(client, message) 
+    return
 
-            if fsub_channels:
-                btn += await is_subscribed(client, message.from_user.id, fsub_channels)
-            if AUTH_REQ_CHANNELS:
-                btn += await is_req_subscribed(client, message.from_user.id, AUTH_REQ_CHANNELS)
-            if btn:
-                if len(message.command) > 1 and "_" in message.command[1]:
-                    kk, file_id = message.command[1].split("_", 1)
-                    btn.append([
-                        InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", callback_data=f"checksub#{kk}#{file_id}")
-                    ])
-                    reply_markup = InlineKeyboardMarkup(btn)
-                photo = random.choice(FSUB_PICS) if FSUB_PICS else "https://graph.org/file/7478ff3eac37f4329c3d8.jpg"
-                caption = (
-                    f"👋 ʜᴇʟʟᴏ {message.from_user.mention}\n\n"
-                    "🛑 ʏᴏᴜ ᴍᴜsᴛ ᴊᴏɪɴ ᴛʜᴇ ʀᴇǫᴜɪʀᴇᴅ ᴄʜᴀɴɴᴇʟs ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ.\n"
-                    "👉 ᴊᴏɪɴ ᴀʟʟ ᴛʜᴇ ʙᴇʟᴏᴡ ᴄʜᴀɴɴᴇʟs ᴀɴᴅ ᴛʀʏ ᴀɢᴀɪɴ."
-                )
-                await message.reply_photo(
-                    photo=photo,
-                    caption=caption,
-                    reply_markup=reply_markup,
-                    parse_mode=enums.ParseMode.HTML
-                )
-                return
+data = message.command[1]
+try:
+    # Fixed: Changed grp*id to grp_id
+    *_, grp_id, file_id = data.split("_", 2)
+    grp_id = int(grp_id)
+except (ValueError, IndexError):
+    # More specific exception handling
+    grp_id, file_id = 0, data
 
-        except Exception as e:
-            await log_error(client, f"❗️ Force Sub Error:\n\n{repr(e)}")
-            logger.error(f"❗️ Force Sub Error:\n\n{repr(e)}")
-
+if not await db.has_premium_access(message.from_user.id): 
+    try:
+        btn = []
+        chat = int(data.split("_", 2)[1])
+        settings = await get_settings(chat)
+        # Fixed: Added proper fallback for settings
+        fsub_channels = settings.get('fsub', []) if settings else []
+        fsub_channels = list(dict.fromkeys(fsub_channels + AUTH_CHANNELS)) 
+        
+        if fsub_channels:
+            btn += await is_subscribed(client, message.from_user.id, fsub_channels)
+        if AUTH_REQ_CHANNELS:
+            btn += await is_req_subscribed(client, message.from_user.id, AUTH_REQ_CHANNELS)
+        
+        if btn:
+            if len(message.command) > 1 and "_" in message.command[1]:
+                kk, file_id = message.command[1].split("_", 1)
+                btn.append([
+                    InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", callback_data=f"checksub#{kk}#{file_id}")
+                ])
+            reply_markup = InlineKeyboardMarkup(btn)
+            
+            photo = random.choice(FSUB_PICS) if FSUB_PICS else "https://graph.org/file/7478ff3eac37f4329c3d8.jpg"
+            caption = (
+                f"👋 ʜᴇʟʟᴏ {message.from_user.mention}\n\n"
+                "🛑 ʏᴏᴜ ᴍᴜsᴛ ᴊᴏɪɴ ᴛʜᴇ ʀᴇǫᴜɪʀᴇᴅ ᴄʜᴀɴɴᴇʟs ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ.\n"
+                "👉 ᴊᴏɪɴ ᴀʟʟ ᴛʜᴇ ʙᴇʟᴏᴡ ᴄʜᴀɴɴᴇʟs ᴀɴᴅ ᴛʀʏ ᴀɢᴀɪɴ."
+            )
+            await message.reply_photo(
+                photo=photo,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+    except Exception as e:
+        await log_error(client, f"❗️ Force Sub Error:\n\n{repr(e)}")
+        logger.error(f"❗️ Force Sub Error:\n\n{repr(e)}")
 
     user_id = m.from_user.id
     if not await db.has_premium_access(user_id):

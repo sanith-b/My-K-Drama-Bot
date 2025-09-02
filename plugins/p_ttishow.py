@@ -302,3 +302,320 @@ async def list_chats(bot, message):
         with open('chats.txt', 'w+') as outfile:
             outfile.write(out)
         await message.reply_document('chats.txt', caption="List Of Chats")
+        
+#user status
+@Client.on_message(filters.command('status') & filters.user(ADMINS))
+async def get_stats(bot, message):
+    try:
+        SilentXBotz = await message.reply('ᴀᴄᴄᴇꜱꜱɪɴɢ ꜱᴛᴀᴛᴜꜱ ᴅᴇᴛᴀɪʟꜱ...')
+        
+        # Basic stats
+        total_users = await db.total_users_count()
+        totl_chats = await db.total_chat_count()
+        premium = await db.all_premium_users()
+        
+        # Live and activity stats
+        live_users = await db.get_live_users_count() if hasattr(db, 'get_live_users_count') else 0
+        active_users_7d = await db.active_users_week() if hasattr(db, 'active_users_week') else 0
+        banned_users = await db.banned_users_count() if hasattr(db, 'banned_users_count') else 0
+        
+        # New user registration stats
+        new_users_today = await db.new_users_today() if hasattr(db, 'new_users_today') else 0
+        new_users_week = await db.new_users_this_week() if hasattr(db, 'new_users_this_week') else 0
+        new_users_month = await db.new_users_this_month() if hasattr(db, 'new_users_this_month') else 0
+        new_users_year = await db.new_users_this_year() if hasattr(db, 'new_users_this_year') else 0
+        
+        # File and media stats
+        file1 = await Media.count_documents()
+        
+        # Database configuration and limits
+        DB_SIZE = getattr(config, 'DB_SIZE_LIMIT', 512) * 1024 * 1024  # Make configurable
+        
+        # Database stats with error handling
+        try:
+            dbstats = await db_stats.command("dbStats")
+            db_size = dbstats.get('dataSize', 0) + dbstats.get('indexSize', 0)
+            collections_count = dbstats.get('collections', 0)
+            indexes_count = dbstats.get('indexes', 0)
+        except Exception as db_error:
+            LOGGER.warning(f"Database stats error: {db_error}")
+            db_size = 0
+            collections_count = 0
+            indexes_count = 0
+            
+        free = max(0, DB_SIZE - db_size)  # Prevent negative values
+        db_usage_percent = (db_size / DB_SIZE * 100) if DB_SIZE > 0 else 0
+        
+        # System metrics with enhanced details
+        uptime = get_readable_time(time() - botStartTime)
+        ram = psutil.virtual_memory()
+        cpu = psutil.cpu_percent(interval=1)  # 1 second interval for accuracy
+        disk = psutil.disk_usage('/')
+        
+        # Network stats (if available)
+        try:
+            network = psutil.net_io_counters()
+            bytes_sent = get_size(network.bytes_sent)
+            bytes_recv = get_size(network.bytes_recv)
+        except:
+            bytes_sent = bytes_recv = "N/A"
+        
+        # Bot-specific metrics
+        bot_info = await bot.get_me()
+        
+        # Enhanced status text with more details
+        enhanced_stats = f"""
+📊 **BOT STATISTICS**
+
+👥 **User Statistics:**
+• Total Users: `{total_users:,}`
+• Live Users: `{live_users:,}` 🟢
+• Total Chats: `{totl_chats:,}`
+• Premium Users: `{premium:,}` ⭐
+• Active (7 days): `{active_users_7d:,}`
+• Banned Users: `{banned_users:,}` 🚫
+
+📈 **New User Growth:**
+• Today: `{new_users_today:,}`
+• This Week: `{new_users_week:,}`
+• This Month: `{new_users_month:,}`
+• This Year: `{new_users_year:,}`
+
+📁 **Database Statistics:**
+• Files in DB1: `{file1:,}`
+• DB Size: `{get_size(db_size)}` ({db_usage_percent:.1f}%)
+• Free Space: `{get_size(free)}`
+• Collections: `{collections_count}`
+• Indexes: `{indexes_count}`
+
+🖥️ **System Performance:**
+• Uptime: `{uptime}`
+• CPU Usage: `{cpu:.1f}%`
+• RAM Usage: `{ram.percent:.1f}%` ({get_size(ram.used)}/{get_size(ram.total)})
+• Disk Usage: `{disk.percent:.1f}%` ({get_size(disk.used)}/{get_size(disk.total)})
+
+🌐 **Network Stats:**
+• Data Sent: `{bytes_sent}`
+• Data Received: `{bytes_recv}`
+
+🤖 **Bot Information:**
+• Bot Username: @{bot_info.username}
+• Bot ID: `{bot_info.id}`
+• Python Version: `{sys.version.split()[0]}`
+• Pyrogram Version: `{pyrogram.__version__}`
+"""
+
+        if MULTIPLE_DB:
+            try:
+                file2 = await Media2.count_documents()
+                db2stats = await db2_stats.command("dbStats")
+                db2_size = db2stats.get('dataSize', 0) + db2stats.get('indexSize', 0)
+                free2 = max(0, DB_SIZE - db2_size)
+                db2_usage_percent = (db2_size / DB_SIZE * 100) if DB_SIZE > 0 else 0
+                
+                enhanced_stats += f"""
+📁 **Secondary Database:**
+• Files in DB2: `{file2:,}`
+• DB2 Size: `{get_size(db2_size)}` ({db2_usage_percent:.1f}%)
+• DB2 Free: `{get_size(free2)}`
+• Total Files: `{file1 + file2:,}`
+"""
+            except Exception as db2_error:
+                LOGGER.warning(f"DB2 stats error: {db2_error}")
+                enhanced_stats += "\n📁 **Secondary Database:** `Error fetching stats`"
+        
+        # Performance warnings
+        warnings = []
+        if ram.percent > 80:
+            warnings.append("⚠️ High RAM usage")
+        if cpu > 80:
+            warnings.append("⚠️ High CPU usage")
+        if db_usage_percent > 90:
+            warnings.append("⚠️ Database nearly full")
+        if disk.percent > 90:
+            warnings.append("⚠️ Disk space low")
+            
+        if warnings:
+            enhanced_stats += f"\n\n🚨 **Warnings:**\n" + "\n".join(f"• {w}" for w in warnings)
+        
+        # Add refresh timestamp
+        enhanced_stats += f"\n\n🔄 **Last Updated:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}`"
+        
+        await SilentXBotz.edit(enhanced_stats, disable_web_page_preview=True)
+        
+    except Exception as e:
+        error_msg = f"❌ **Error fetching stats:**\n`{str(e)}`"
+        try:
+            await SilentXBotz.edit(error_msg)
+        except:
+            await message.reply(error_msg)
+        LOGGER.error(f"Stats command error: {e}", exc_info=True)
+
+
+# Additional helper function for better error handling
+async def safe_db_query(query_func, default_value=0):
+    """Safely execute database queries with fallback"""
+    try:
+        result = await query_func()
+        return result if result is not None else default_value
+    except Exception as e:
+        LOGGER.warning(f"Database query failed: {e}")
+        return default_value
+
+
+# Database methods to implement in your database class
+class Database:
+    
+    async def get_live_users_count(self):
+        """Count users who were active in the last 5 minutes"""
+        from datetime import datetime, timedelta
+        cutoff_time = datetime.utcnow() - timedelta(minutes=5)
+        return await self.col.count_documents({
+            "last_active": {"$gte": cutoff_time}
+        })
+    
+    async def new_users_today(self):
+        """Count users who joined today"""
+        from datetime import datetime, timedelta
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        return await self.col.count_documents({
+            "date": {"$gte": today_start}
+        })
+    
+    async def new_users_this_week(self):
+        """Count users who joined this week"""
+        from datetime import datetime, timedelta
+        week_start = datetime.utcnow() - timedelta(days=datetime.utcnow().weekday())
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        return await self.col.count_documents({
+            "date": {"$gte": week_start}
+        })
+    
+    async def new_users_this_month(self):
+        """Count users who joined this month"""
+        from datetime import datetime
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return await self.col.count_documents({
+            "date": {"$gte": month_start}
+        })
+    
+    async def new_users_this_year(self):
+        """Count users who joined this year"""
+        from datetime import datetime
+        year_start = datetime.utcnow().replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        return await self.col.count_documents({
+            "date": {"$gte": year_start}
+        })
+    
+    async def active_users_week(self):
+        """Count users who were active in the last 7 days"""
+        from datetime import datetime, timedelta
+        week_ago = datetime.utcnow() - timedelta(days=7)
+        return await self.col.count_documents({
+            "last_active": {"$gte": week_ago}
+        })
+    
+    async def banned_users_count(self):
+        """Count banned users"""
+        return await self.col.count_documents({
+            "banned": True
+        })
+    
+    async def update_user_activity(self, user_id):
+        """Update user's last activity timestamp"""
+        from datetime import datetime
+        await self.col.update_one(
+            {"id": user_id},
+            {"$set": {"last_active": datetime.utcnow()}},
+            upsert=True
+        )
+
+
+# User activity tracker - Add this to your main bot file
+@Client.on_message()
+async def track_user_activity(client, message):
+    """Track user activity for live users count"""
+    if message.from_user:
+        try:
+            await db.update_user_activity(message.from_user.id)
+        except Exception as e:
+            LOGGER.error(f"Failed to update user activity: {e}")
+    
+    # Continue with your existing message handlers
+    # This should be placed before other message handlers
+
+
+# Alternative optimized version with batching
+class UserActivityTracker:
+    def __init__(self):
+        self.activity_queue = set()
+        self.last_batch_update = time()
+        
+    async def track_activity(self, user_id):
+        """Add user to activity queue"""
+        self.activity_queue.add(user_id)
+        
+        # Batch update every 30 seconds
+        if time() - self.last_batch_update > 30:
+            await self.flush_activity_queue()
+    
+    async def flush_activity_queue(self):
+        """Batch update user activities"""
+        if not self.activity_queue:
+            return
+            
+        try:
+            from datetime import datetime
+            current_time = datetime.utcnow()
+            
+            # Bulk update all users at once
+            await db.col.update_many(
+                {"id": {"$in": list(self.activity_queue)}},
+                {"$set": {"last_active": current_time}}
+            )
+            
+            self.activity_queue.clear()
+            self.last_batch_update = time()
+            
+        except Exception as e:
+            LOGGER.error(f"Failed to batch update activities: {e}")
+
+
+# Initialize the tracker
+activity_tracker = UserActivityTracker()
+
+@Client.on_message()
+async def optimized_activity_tracker(client, message):
+    """Optimized user activity tracking"""
+    if message.from_user:
+        await activity_tracker.track_activity(message.from_user.id)
+
+
+# Enhanced version with caching (optional)
+import asyncio
+from functools import wraps
+
+def cache_stats(duration=60):  # Cache for 60 seconds
+    def decorator(func):
+        cache = {"data": None, "timestamp": 0}
+        
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            current_time = time()
+            if current_time - cache["timestamp"] > duration:
+                cache["data"] = await func(*args, **kwargs)
+                cache["timestamp"] = current_time
+            return cache["data"]
+        return wrapper
+    return decorator
+
+
+@cache_stats(duration=30)  # Cache system stats for 30 seconds
+async def get_system_stats():
+    """Get system statistics with caching"""
+    return {
+        'ram': psutil.virtual_memory(),
+        'cpu': psutil.cpu_percent(interval=1),
+        'disk': psutil.disk_usage('/'),
+        'network': psutil.net_io_counters()
+    }

@@ -310,3 +310,176 @@ async def siletxbotz_get_series(limit: int = 30) -> Dict[str, List[int]]:
     except Exception as e:
         LOGGER.error(f"Error in siletxbotz_get_series: {e}")
         return []
+# Add these methods to your Database class
+# Copy and paste these into your database.py file
+
+class Database:
+    # ... your existing methods ...
+    
+    async def update_user_activity(self, user_id):
+        """Update user's last activity timestamp"""
+        from datetime import datetime
+        try:
+            await self.col.update_one(
+                {"id": user_id},
+                {"$set": {"last_active": datetime.utcnow()}},
+                upsert=True
+            )
+        except Exception as e:
+            # Don't crash if this fails
+            pass
+    
+    async def get_live_users_count(self):
+        """Count users who were active in the last 5 minutes"""
+        try:
+            from datetime import datetime, timedelta
+            cutoff_time = datetime.utcnow() - timedelta(minutes=5)
+            return await self.col.count_documents({
+                "last_active": {"$gte": cutoff_time}
+            })
+        except:
+            return 0
+    
+    async def new_users_today(self):
+        """Count users who joined today"""
+        try:
+            from datetime import datetime, timedelta
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            return await self.col.count_documents({
+                "date": {"$gte": today_start}
+            })
+        except:
+            return 0
+    
+    async def new_users_this_week(self):
+        """Count users who joined this week"""
+        try:
+            from datetime import datetime, timedelta
+            week_start = datetime.utcnow() - timedelta(days=datetime.utcnow().weekday())
+            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            return await self.col.count_documents({
+                "date": {"$gte": week_start}
+            })
+        except:
+            return 0
+    
+    async def new_users_this_month(self):
+        """Count users who joined this month"""
+        try:
+            from datetime import datetime
+            month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            return await self.col.count_documents({
+                "date": {"$gte": month_start}
+            })
+        except:
+            return 0
+    
+    async def new_users_this_year(self):
+        """Count users who joined this year"""
+        try:
+            from datetime import datetime
+            year_start = datetime.utcnow().replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            return await self.col.count_documents({
+                "date": {"$gte": year_start}
+            })
+        except:
+            return 0
+    
+    async def active_users_week(self):
+        """Count users who were active in the last 7 days"""
+        try:
+            from datetime import datetime, timedelta
+            week_ago = datetime.utcnow() - timedelta(days=7)
+            return await self.col.count_documents({
+                "last_active": {"$gte": week_ago}
+            })
+        except:
+            return 0
+    
+    async def banned_users_count(self):
+        """Count banned users"""
+        try:
+            return await self.col.count_documents({
+                "banned": True
+            })
+        except:
+            return 0
+    
+    async def blocked_bot_users_count(self):
+        """Count users who have blocked the bot"""
+        try:
+            return await self.col.count_documents({
+                "blocked_bot": True
+            })
+        except:
+            return 0
+    
+    async def mark_user_blocked(self, user_id):
+        """Mark a user as having blocked the bot"""
+        try:
+            from datetime import datetime
+            await self.col.update_one(
+                {"id": user_id},
+                {
+                    "$set": {
+                        "blocked_bot": True,
+                        "blocked_date": datetime.utcnow()
+                    }
+                }
+            )
+        except:
+            pass
+    
+    async def mark_user_unblocked(self, user_id):
+        """Mark a user as having unblocked the bot"""
+        try:
+            await self.col.update_one(
+                {"id": user_id},
+                {
+                    "$set": {
+                        "blocked_bot": False
+                    },
+                    "$unset": {
+                        "blocked_date": ""
+                    }
+                }
+            )
+        except:
+            pass
+
+
+# Optional: Migration script to add missing fields to existing users
+async def migrate_user_fields():
+    """Add missing fields to existing users"""
+    try:
+        from datetime import datetime
+        
+        # Add last_active field
+        result1 = await db.col.update_many(
+            {"last_active": {"$exists": False}},
+            {"$set": {"last_active": datetime.utcnow()}}
+        )
+        
+        # Add banned field
+        result2 = await db.col.update_many(
+            {"banned": {"$exists": False}},
+            {"$set": {"banned": False}}
+        )
+        
+        # Add blocked_bot field
+        result3 = await db.col.update_many(
+            {"blocked_bot": {"$exists": False}},
+            {"$set": {"blocked_bot": False}}
+        )
+        
+        print(f"Migration complete:")
+        print(f"- Added last_active to {result1.modified_count} users")
+        print(f"- Added banned to {result2.modified_count} users") 
+        print(f"- Added blocked_bot to {result3.modified_count} users")
+        
+    except Exception as e:
+        print(f"Migration failed: {e}")
+
+
+# Run this once to migrate existing users
+# asyncio.run(migrate_user_fields())

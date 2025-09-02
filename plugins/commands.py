@@ -739,7 +739,8 @@ async def all_settings(client, message):
         title = message.chat.title
         
         if not await is_check_admin(client, grp_id, message.from_user.id):
-        return await message.reply_text('<b>🚫 You’re Not an Admin!</b>')    
+            return await message.reply_text('<b>🚫 You’re Not an Admin!</b>') 
+        
         settings = await get_settings(grp_id)
         nbbotz = f"""<b>⚙️ Your Settings For - {title}</b>
 

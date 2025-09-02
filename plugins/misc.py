@@ -326,7 +326,7 @@ async def identify_poster_command(client, message):
                         f"✨ **Method:** OCR\n\n"
                         f"📽️ **IMDB Results:**\n"
                         f"💌 *Click any movie to get details in PM*\n\n"
-                        f"✨ To download 🎬 '{identified_title}', please send 📩 '{identified_title}' in the bot's PM 🤖"
+                        f"✨ To download 🎬 `{identified_title}`,\n please send 📩 `{identified_title}` in the bot's PM 🤖"
                         ,
                         reply_markup=InlineKeyboardMarkup(btn)
                     )
@@ -335,7 +335,7 @@ async def identify_poster_command(client, message):
                         f"🎬 **Detected:** {identified_title}\n"
                         f"✨ **Method:** FREE OCR APIs\n\n"
                         f"❌ No IMDB results found\n\n"
-                        f"✨ To download 🎬 '{identified_title}', please send 📩 '{identified_title}' in the bot's PM 🤖\n\n"
+                        f"✨ To download 🎬 `{identified_title}`,\n please send 📩 `{identified_title}` in the bot's PM 🤖\n\n"
                         f"💡 Try searching manually: `/imdb {identified_title}`"
                     )
             else:

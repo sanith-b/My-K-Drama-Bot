@@ -197,3 +197,12 @@ else:
 
 AUTH_CHANNEL = [int(ch) for ch in AUTH_CHANNEL.strip().split()] if AUTH_CHANNEL else []
 AUTH_REQ_CHANNEL = [int(ch) for ch in AUTH_REQ_CHANNEL.strip().split()] if AUTH_REQ_CHANNEL else []
+
+# Voice search settings
+VOICE_SEARCH_PREMIUM_ONLY = False  # Set True to require premium for voice search
+VOICE_SEARCH_ENABLED = True
+
+# Enhanced features
+ENHANCED_SEARCH_SUGGESTIONS = True
+PERSONALIZED_RESULTS = True
+SEARCH_ANALYTICS = True

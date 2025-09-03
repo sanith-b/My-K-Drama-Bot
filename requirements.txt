@@ -35,4 +35,3 @@ qrcode
 pytesseract
 
 SpeechRecognition
-PyAudio

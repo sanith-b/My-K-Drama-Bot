@@ -130,32 +130,47 @@ QUALITIES = ["480P", "", "540P", "", "720P", "", "1080P", "", "2160P", ""]
 SEASONS = ["s01" , "s02" , "s03" , "s04", "s05"]
 
 
+
+# Detect platform
+ON_HEROKU = 'DYNO' in environ
+ON_KOYEB = 'PORT' in environ and not ON_HEROKU
+
+APP_NAME = getenv('APP_NAME', None)
 NO_PORT = bool(environ.get('NO_PORT', False))
-APP_NAME = None
-if 'DYNO' in environ:
-    ON_HEROKU = True
-    APP_NAME = environ.get('APP_NAME')
+
+BIND_ADDRESS = str(getenv('WEB_SERVER_BIND_ADDRESS', '0.0.0.0'))
+
+if ON_HEROKU:
+    FQDN = getenv('FQDN', APP_NAME + '.herokuapp.com' if APP_NAME else BIND_ADDRESS)
+elif ON_KOYEB:
+    # default to service name if not provided
+    FQDN = getenv('FQDN', f"{APP_NAME}.koyeb.app" if APP_NAME else BIND_ADDRESS)
 else:
-    ON_HEROKU = False
-BIND_ADRESS = str(getenv('WEB_SERVER_BIND_ADDRESS', '0.0.0.0'))
-FQDN = str(getenv('FQDN', BIND_ADRESS)) if not ON_HEROKU or getenv('FQDN') else APP_NAME+'.herokuapp.com'
-URL = "https://{}/".format(FQDN) if ON_HEROKU or NO_PORT else "https://{}/".format(FQDN, PORT)
+    FQDN = getenv('FQDN', BIND_ADDRESS)
+
+HAS_SSL = bool(getenv('HAS_SSL', True))
+PORT = int(getenv('PORT', 8000))
+
+if HAS_SSL:
+    if NO_PORT or ON_HEROKU or ON_KOYEB:
+        URL = f"https://{FQDN}/"
+    else:
+        URL = f"https://{FQDN}:{PORT}/"
+else:
+    if NO_PORT or ON_HEROKU or ON_KOYEB:
+        URL = f"http://{FQDN}/"
+    else:
+        URL = f"http://{FQDN}:{PORT}/"
+
+# Other settings
 SLEEP_THRESHOLD = int(environ.get('SLEEP_THRESHOLD', '60'))
 WORKERS = int(environ.get('WORKERS', '4'))
 SESSION_NAME = str(environ.get('SESSION_NAME', 'SilentXBotz'))
 MULTI_CLIENT = False
-name = str(environ.get('name', 'SilentX'))
+NAME = str(environ.get('name', 'SilentX'))
 PING_INTERVAL = int(environ.get("PING_INTERVAL", "1200"))  # 20 minutes
-if 'DYNO' in environ:
-    ON_HEROKU = True
-    APP_NAME = str(getenv('APP_NAME'))
-else:
-    ON_HEROKU = False
-HAS_SSL = bool(getenv('HAS_SSL', False))
-if HAS_SSL:
-    URL = "https://{}/".format(FQDN)
-else:
-    URL = "http://{}/".format(FQDN)
+
+
 
 
 REACTIONS = ["🤝", "😇", "🤗", "😍", "👍", "🎅", "😐", "🥰", "🤩", "😱", "🤣", "😘", "👏", "😛", "😈", "🎉", "⚡️", "🫡", "🤓", "😎", "🏆", "🔥", "🤭", "🌚", "🆒", "👻", "😁"]

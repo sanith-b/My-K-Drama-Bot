@@ -813,7 +813,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             )
 
     
-elif lazyData.startswith("streamfile"):
+    elif lazyData.startswith("streamfile"):
         _, file_id = lazyData.split(":")
         try:
             user_id = query.from_user.id

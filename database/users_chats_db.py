@@ -1,9 +1,11 @@
 import motor.motor_asyncio
 from info import *  
-from datetime import timedelta
+from datetime import datetime, timedelta
 import time, datetime, pytz
 from pymongo.errors import DuplicateKeyError
 from pymongo import MongoClient
+import pymongo
+from logging_helper import LOGGER
 
 class Database:    
     def __init__(self, uri, database_name):
@@ -423,3 +425,312 @@ class Database:
         
 db = Database(DATABASE_URI, DATABASE_NAME)    
 db2 = Database(DATABASE_URI2, DATABASE_NAME)
+# Add these functions to your database/users_chats_db.py file
+
+
+
+class Userdatabase:
+    def __init__(self, uri, database_name):
+        self._client = pymongo.MongoClient(uri)
+        self.db = self._client[database_name]
+        self.col = self.db[COLLECTION_NAME]
+        self.col2 = self.db[COLLECTION_NAME_2]
+
+    # Existing methods...
+    
+    async def add_user(self, user_id, name):
+        """Add new user with join date and activity tracking"""
+        user = {
+            'id': user_id,
+            'name': name,
+            'ban_status': {
+                'is_banned': False,
+                'ban_reason': "",
+            },
+            'join_date': datetime.now(),
+            'last_activity': datetime.now(),
+            'is_blocked': False,
+            'is_premium': False
+        }
+        await self.col.insert_one(user)
+
+    async def update_user_activity(self, user_id):
+        """Update user's last activity timestamp"""
+        try:
+            await self.col.update_one(
+                {'id': user_id},
+                {
+                    '$set': {'last_activity': datetime.now()},
+                    '$setOnInsert': {
+                        'join_date': datetime.now(),
+                        'is_blocked': False,
+                        'ban_status': {'is_banned': False, 'ban_reason': ""},
+                        'name': 'Unknown'
+                    }
+                },
+                upsert=True
+            )
+        except Exception as e:
+            LOGGER.error(f"Error updating user activity: {e}")
+
+    async def mark_user_blocked(self, user_id):
+        """Mark user as blocked"""
+        await self.col.update_one(
+            {'id': user_id},
+            {'$set': {'is_blocked': True, 'blocked_date': datetime.now()}}
+        )
+
+    async def unmark_user_blocked(self, user_id):
+        """Unmark user as blocked"""
+        await self.col.update_one(
+            {'id': user_id},
+            {'$set': {'is_blocked': False}, '$unset': {'blocked_date': ""}}
+        )
+
+    # Analytics Functions
+    async def count_new_users(self, since_date):
+        """Count users who joined since specified date"""
+        try:
+            count = await self.col.count_documents({
+                'join_date': {'$gte': since_date}
+            })
+            return count
+        except Exception as e:
+            LOGGER.error(f"Error counting new users: {e}")
+            return 0
+
+    async def count_active_users(self, since_date):
+        """Count users who were active since specified date"""
+        try:
+            count = await self.col.count_documents({
+                'last_activity': {'$gte': since_date},
+                'ban_status.is_banned': False,
+                'is_blocked': {'$ne': True}
+            })
+            return count
+        except Exception as e:
+            LOGGER.error(f"Error counting active users: {e}")
+            return 0
+
+    async def count_online_users(self, threshold_time):
+        """Count users online within threshold time"""
+        try:
+            count = await self.col.count_documents({
+                'last_activity': {'$gte': threshold_time},
+                'ban_status.is_banned': False,
+                'is_blocked': {'$ne': True}
+            })
+            return count
+        except Exception as e:
+            LOGGER.error(f"Error counting online users: {e}")
+            return 0
+
+    async def count_inactive_users(self, threshold_time):
+        """Count users inactive for more than threshold time"""
+        try:
+            count = await self.col.count_documents({
+                '$or': [
+                    {'last_activity': {'$lt': threshold_time}},
+                    {'last_activity': {'$exists': False}}
+                ],
+                'ban_status.is_banned': False,
+                'is_blocked': {'$ne': True}
+            })
+            return count
+        except Exception as e:
+            LOGGER.error(f"Error counting inactive users: {e}")
+            return 0
+
+    async def count_blocked_users(self):
+        """Count users who have blocked the bot"""
+        try:
+            count = await self.col.count_documents({
+                'is_blocked': True
+            })
+            return count
+        except Exception as e:
+            LOGGER.error(f"Error counting blocked users: {e}")
+            return 0
+
+    async def get_user_growth_stats(self, days=30):
+        """Get user growth statistics for the last N days"""
+        try:
+            pipeline = [
+                {
+                    '$match': {
+                        'join_date': {
+                            '$gte': datetime.now() - timedelta(days=days)
+                        }
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': {
+                            '$dateToString': {
+                                'format': '%Y-%m-%d',
+                                'date': '$join_date'
+                            }
+                        },
+                        'count': {'$sum': 1}
+                    }
+                },
+                {'$sort': {'_id': 1}}
+            ]
+            
+            cursor = self.col.aggregate(pipeline)
+            result = []
+            async for doc in cursor:
+                result.append({
+                    'date': doc['_id'],
+                    'new_users': doc['count']
+                })
+            return result
+        except Exception as e:
+            LOGGER.error(f"Error getting growth stats: {e}")
+            return []
+
+    async def get_activity_heatmap(self, days=7):
+        """Get activity heatmap for the last N days"""
+        try:
+            start_date = datetime.now() - timedelta(days=days)
+            pipeline = [
+                {
+                    '$match': {
+                        'last_activity': {'$gte': start_date}
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': {
+                            'date': {
+                                '$dateToString': {
+                                    'format': '%Y-%m-%d',
+                                    'date': '$last_activity'
+                                }
+                            },
+                            'hour': {'$hour': '$last_activity'}
+                        },
+                        'count': {'$sum': 1}
+                    }
+                },
+                {'$sort': {'_id.date': 1, '_id.hour': 1}}
+            ]
+            
+            cursor = self.col.aggregate(pipeline)
+            result = []
+            async for doc in cursor:
+                result.append({
+                    'date': doc['_id']['date'],
+                    'hour': doc['_id']['hour'],
+                    'activity_count': doc['count']
+                })
+            return result
+        except Exception as e:
+            LOGGER.error(f"Error getting activity heatmap: {e}")
+            return []
+
+    async def get_top_active_users(self, limit=10, days=7):
+        """Get most active users in the last N days"""
+        try:
+            start_date = datetime.now() - timedelta(days=days)
+            
+            # This is a simplified version - you'd need to track user interactions more granularly
+            pipeline = [
+                {
+                    '$match': {
+                        'last_activity': {'$gte': start_date},
+                        'ban_status.is_banned': False,
+                        'is_blocked': {'$ne': True}
+                    }
+                },
+                {
+                    '$sort': {'last_activity': -1}
+                },
+                {
+                    '$limit': limit
+                }
+            ]
+            
+            cursor = self.col.aggregate(pipeline)
+            result = []
+            async for doc in cursor:
+                result.append({
+                    'user_id': doc['id'],
+                    'name': doc['name'],
+                    'last_activity': doc['last_activity']
+                })
+            return result
+        except Exception as e:
+            LOGGER.error(f"Error getting top active users: {e}")
+            return []
+
+    async def get_user_retention_rate(self):
+        """Calculate user retention rate"""
+        try:
+            # Users who joined in the last 30 days
+            thirty_days_ago = datetime.now() - timedelta(days=30)
+            seven_days_ago = datetime.now() - timedelta(days=7)
+            
+            new_users_30d = await self.col.count_documents({
+                'join_date': {'$gte': thirty_days_ago}
+            })
+            
+            # Of those new users, how many were active in the last 7 days
+            retained_users = await self.col.count_documents({
+                'join_date': {'$gte': thirty_days_ago},
+                'last_activity': {'$gte': seven_days_ago}
+            })
+            
+            retention_rate = (retained_users / new_users_30d * 100) if new_users_30d > 0 else 0
+            
+            return {
+                'new_users_30d': new_users_30d,
+                'retained_users': retained_users,
+                'retention_rate': round(retention_rate, 2)
+            }
+        except Exception as e:
+            LOGGER.error(f"Error calculating retention rate: {e}")
+            return {'new_users_30d': 0, 'retained_users': 0, 'retention_rate': 0}
+
+    async def get_geographic_stats(self):
+        """Get user distribution by language/region (if you track this data)"""
+        try:
+            # This assumes you store language_code in user records
+            pipeline = [
+                {
+                    '$group': {
+                        '_id': '$language_code',
+                        'count': {'$sum': 1}
+                    }
+                },
+                {'$sort': {'count': -1}}
+            ]
+            
+            cursor = self.col.aggregate(pipeline)
+            result = []
+            async for doc in cursor:
+                result.append({
+                    'language': doc['_id'] or 'Unknown',
+                    'users': doc['count']
+                })
+            return result
+        except Exception as e:
+            LOGGER.error(f"Error getting geographic stats: {e}")
+            return []
+
+    async def cleanup_old_inactive_users(self, days=90):
+        """Remove users inactive for more than specified days (optional cleanup)"""
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days)
+            result = await self.col.delete_many({
+                'last_activity': {'$lt': cutoff_date},
+                'ban_status.is_banned': False,
+                'is_blocked': True  # Only delete blocked inactive users
+            })
+            return result.deleted_count
+        except Exception as e:
+            LOGGER.error(f"Error cleaning up old users: {e}")
+            return 0
+
+# Initialize database
+db = Userdatabase(DATABASE_URI, DATABASE_NAME)

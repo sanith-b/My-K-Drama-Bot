@@ -124,145 +124,370 @@ async def next_page(bot, query):
     try:
         ident, req, key, offset = query.data.split("_")
         curr_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
+        
+        # Check if user is authorized to navigate
         if int(req) not in [query.from_user.id, 0]:
             return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+        
         try:
             offset = int(offset)
         except:
             offset = 0
-        if BUTTONS.get(key)!=None:
+            
+        # Get search results
+        if BUTTONS.get(key) != None:
             search = BUTTONS.get(key)
         else:
             search = FRESH.get(key)
+            
         if not search:
-            await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name),show_alert=True)
+            await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
             return
+            
         files, n_offset, total = await get_search_results(query.message.chat.id, search, offset=offset, filter=True)
+        
         try:
             n_offset = int(n_offset)
         except:
             n_offset = 0
+            
         if not files:
             return
+            
         temp.GETALL[key] = files
         temp.SHORT[query.from_user.id] = query.message.chat.id
         settings = await get_settings(query.message.chat.id)
+        
+        # Build file buttons if enabled
         if settings.get('button'):
             btn = [
                 [
                     InlineKeyboardButton(
-                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", callback_data=f'file#{file.file_id}'
+                        text=f"{silent_size(file.file_size)}| {extract_tag(file.file_name)} {clean_filename(file.file_name)}", 
+                        callback_data=f'file#{file.file_id}'
                     ),
                 ]
                 for file in files
             ]
-            btn.insert(0, 
-                [ 
-                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                    InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-                ]
-            )
+            # Add filter buttons
+            btn.insert(0, [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
+            ])
+            # Add send all button
             btn.insert(1, [
                 InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
-           
             ])
         else:
             btn = []
-            btn.insert(0, 
-                [
-                    InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                    InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
-                ]
-            )
-            btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}") 
-           
+            # Add filter buttons even when file buttons are disabled
+            btn.insert(0, [
+                InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
+                InlineKeyboardButton("🗓️ Season", callback_data=f"seasons#{key}#0")
             ])
+            btn.insert(1, [
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+            ])
+        
+        # Enhanced Navigation Buttons Logic
         try:
-            if settings['max_btn']:
-                if 0 < offset <= 10:
-                    off_set = 0
-                elif offset == 0:
-                    off_set = None
-                else:
-                    off_set = offset - 10
-                if n_offset == 0:
-                    btn.append(
-                        [InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages")]
-                    )
-                elif off_set is None:
-                    btn.append([InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"), InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")])
-                else:
-                    btn.append(
-                        [
-                            InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
-                            InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"),
-                            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                        ],
-                    )
-            else:
-                if 0 < offset <= int(MAX_B_TN):
-                    off_set = 0
-                elif offset == 0:
-                    off_set = None
-                else:
-                    off_set = offset - int(MAX_B_TN)
-                if n_offset == 0:
-                    btn.append(
-                        [InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"{math.ceil(int(offset)/int(MAX_B_TN))+1} / {math.ceil(total/int(MAX_B_TN))}", callback_data="pages")]
-                    )
-                elif off_set is None:
-                    btn.append([InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(f"{math.ceil(int(offset)/int(MAX_B_TN))+1} / {math.ceil(total/int(MAX_B_TN))}", callback_data="pages"), InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")])
-                else:
-                    btn.append(
-                        [
-                            InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
-                            InlineKeyboardButton(f"{math.ceil(int(offset)/int(MAX_B_TN))+1} / {math.ceil(total/int(MAX_B_TN))}", callback_data="pages"),
-                            InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                        ],
-                    )
-        except KeyError:
-            await save_group_settings(query.message.chat.id, 'max_btn', True)
-            if 0 < offset <= 10:
-                off_set = 0
+            max_btn_setting = settings.get('max_btn', True)
+            items_per_page = 10 if max_btn_setting else int(MAX_B_TN)
+            
+            # Calculate pagination values
+            current_page = math.ceil(int(offset) / items_per_page) + 1
+            total_pages = math.ceil(total / items_per_page)
+            
+            # Calculate previous offset
+            if 0 < offset <= items_per_page:
+                prev_offset = 0
             elif offset == 0:
-                off_set = None
+                prev_offset = None
             else:
-                off_set = offset - 10
+                prev_offset = offset - items_per_page
+            
+            # Build navigation buttons based on current position
+            nav_buttons = []
+            
+            if n_offset == 0:  # Last page
+                if prev_offset is not None:
+                    nav_buttons = [
+                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"),
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
+                    ]
+                else:
+                    nav_buttons = [
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
+                    ]
+            elif prev_offset is None:  # First page
+                nav_buttons = [
+                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ]
+            else:  # Middle pages
+                nav_buttons = [
+                    InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"),
+                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ]
+            
+            # Add navigation buttons to the keyboard
+            if nav_buttons:
+                btn.append(nav_buttons)
+                
+            # Optional: Add jump to first/last page buttons for better navigation
+            if total_pages > 3 and current_page > 2:
+                jump_buttons = []
+                if current_page > 2:
+                    jump_buttons.append(InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0"))
+                if current_page < total_pages - 1:
+                    last_offset = (total_pages - 1) * items_per_page
+                    jump_buttons.append(InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{last_offset}"))
+                
+                if jump_buttons:
+                    btn.append(jump_buttons)
+                    
+        except KeyError:
+            # Fallback to default settings if max_btn is not set
+            await save_group_settings(query.message.chat.id, 'max_btn', True)
+            
+            current_page = math.ceil(int(offset) / 10) + 1
+            total_pages = math.ceil(total / 10)
+            
+            if 0 < offset <= 10:
+                prev_offset = 0
+            elif offset == 0:
+                prev_offset = None
+            else:
+                prev_offset = offset - 10
+                
             if n_offset == 0:
-                btn.append(
-                    [InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages")]
-                )
-            elif off_set is None:
-                btn.append([InlineKeyboardButton("📄 Page", callback_data="pages"), InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"), InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")])
+                if prev_offset is not None:
+                    btn.append([
+                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"),
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
+                    ])
+                else:
+                    btn.append([
+                        InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages")
+                    ])
+            elif prev_offset is None:
+                btn.append([
+                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ])
             else:
-                btn.append(
-                    [
-                        InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{off_set}"),
-                        InlineKeyboardButton(f"{math.ceil(int(offset)/10)+1} / {math.ceil(total/10)}", callback_data="pages"),
-                        InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
-                    ],
-                )
+                btn.append([
+                    InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"),
+                    InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"),
+                    InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}")
+                ])
+        
+        # Update message based on button settings
         if not settings.get('button'):
             cur_time = datetime.now(pytz.timezone('Asia/Kolkata')).time()
-            time_difference = timedelta(hours=cur_time.hour, minutes=cur_time.minute, seconds=(cur_time.second+(cur_time.microsecond/1000000))) - timedelta(hours=curr_time.hour, minutes=curr_time.minute, seconds=(curr_time.second+(curr_time.microsecond/1000000)))
+            time_difference = timedelta(
+                hours=cur_time.hour, 
+                minutes=cur_time.minute, 
+                seconds=(cur_time.second + (cur_time.microsecond/1000000))
+            ) - timedelta(
+                hours=curr_time.hour, 
+                minutes=curr_time.minute, 
+                seconds=(curr_time.second + (curr_time.microsecond/1000000))
+            )
             remaining_seconds = "{:.2f}".format(time_difference.total_seconds())
             cap = await get_cap(settings, remaining_seconds, files, query, total, search, offset)
+            
             try:
-                await query.message.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+                await query.message.edit_text(
+                    text=cap, 
+                    reply_markup=InlineKeyboardMarkup(btn), 
+                    disable_web_page_preview=True, 
+                    parse_mode=enums.ParseMode.HTML
+                )
             except MessageNotModified:
                 pass
         else:
             try:
-                await query.edit_message_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(btn)
-                )
+                await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(btn))
             except MessageNotModified:
                 pass
+                
         await query.answer()
+        
     except Exception as e:
-        LOGGER.error(f"Error In Next Funtion - {e}")
+        LOGGER.error(f"Error In Next Function - {e}")
 
+
+# Enhanced helper function with page number jumping
+async def build_navigation_buttons(req, key, offset, n_offset, total, items_per_page, show_jump_buttons=True, show_page_numbers=True):
+    """
+    Helper function to build advanced navigation buttons with page numbers
+    """
+    current_page = math.ceil(int(offset) / items_per_page) + 1
+    total_pages = math.ceil(total / items_per_page)
+    
+    # Calculate previous offset
+    if 0 < offset <= items_per_page:
+        prev_offset = 0
+    elif offset == 0:
+        prev_offset = None
+    else:
+        prev_offset = offset - items_per_page
+    
+    buttons = []
+    
+    # Main navigation row
+    nav_row = []
+    
+    if prev_offset is not None:
+        nav_row.append(InlineKeyboardButton("⬅️ Back", callback_data=f"next_{req}_{key}_{prev_offset}"))
+    
+    nav_row.append(InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="pages"))
+    
+    if n_offset != 0:  # Not last page
+        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"next_{req}_{key}_{n_offset}"))
+    
+    buttons.append(nav_row)
+    
+    # Page number buttons for direct jumping
+    if show_page_numbers and total_pages > 1:
+        page_numbers = []
+        start_page = max(1, current_page - 2)
+        end_page = min(total_pages, current_page + 2)
+        
+        for page_num in range(start_page, end_page + 1):
+            if page_num != current_page:  # Don't show current page as clickable
+                page_offset = (page_num - 1) * items_per_page
+                page_numbers.append(
+                    InlineKeyboardButton(f"{page_num}", callback_data=f"next_{req}_{key}_{page_offset}")
+                )
+        
+        if page_numbers:
+            # Split into multiple rows if too many buttons
+            if len(page_numbers) > 5:
+                buttons.append(page_numbers[:3])
+                buttons.append(page_numbers[3:])
+            else:
+                buttons.append(page_numbers)
+    
+    # Jump buttons for large datasets
+    if show_jump_buttons and total_pages > 3:
+        jump_row = []
+        
+        # First page button
+        if current_page > 2:
+            jump_row.append(InlineKeyboardButton("⏮️ First", callback_data=f"next_{req}_{key}_0"))
+        
+        # Last page button
+        if current_page < total_pages - 1:
+            last_offset = (total_pages - 1) * items_per_page
+            jump_row.append(InlineKeyboardButton("⏭️ Last", callback_data=f"next_{req}_{key}_{last_offset}"))
+        
+        if jump_row:
+            buttons.append(jump_row)
+    
+    # Quick jump options for very large datasets
+    if total_pages > 10:
+        quick_jump = []
+        
+        # Jump backward by larger increments
+        if current_page > 10:
+            jump_back_10_offset = max(0, (current_page - 11) * items_per_page)
+            quick_jump.append(InlineKeyboardButton("⏪ -10", callback_data=f"next_{req}_{key}_{jump_back_10_offset}"))
+        
+        if current_page > 5:
+            jump_back_5_offset = max(0, (current_page - 6) * items_per_page)
+            quick_jump.append(InlineKeyboardButton("↩️ -5", callback_data=f"next_{req}_{key}_{jump_back_5_offset}"))
+        
+        # Jump forward by larger increments
+        if current_page + 5 <= total_pages:
+            jump_forward_5_offset = (current_page + 4) * items_per_page
+            quick_jump.append(InlineKeyboardButton("↪️ +5", callback_data=f"next_{req}_{key}_{jump_forward_5_offset}"))
+        
+        if current_page + 10 <= total_pages:
+            jump_forward_10_offset = (current_page + 9) * items_per_page
+            quick_jump.append(InlineKeyboardButton("⏩ +10", callback_data=f"next_{req}_{key}_{jump_forward_10_offset}"))
+        
+        if quick_jump:
+            buttons.append(quick_jump)
+    
+    return buttons
+
+
+# Alternative: Input-based page jumping (requires additional handler)
+@Client.on_callback_query(filters.regex(r"^goto_page"))
+async def goto_page(bot, query):
+    """
+    Handler for direct page input - requires user to send page number
+    """
+    try:
+        _, req, key = query.data.split("#")
+        
+        if int(req) not in [query.from_user.id, 0]:
+            return await query.answer("❌ Not authorized", show_alert=True)
+        
+        await query.answer("📝 Send page number to jump to:", show_alert=True)
+        
+        # Store the jump request in temporary storage
+        temp.PAGE_JUMP[query.from_user.id] = {
+            'key': key,
+            'req': req,
+            'chat_id': query.message.chat.id
+        }
+        
+    except Exception as e:
+        await query.answer("❌ Error occurred", show_alert=True)
+        LOGGER.error(f"Error in goto_page: {e}")
+
+
+@Client.on_message(filters.text & filters.private)
+async def handle_page_jump(bot, message):
+    """
+    Handle page number input for jumping
+    """
+    user_id = message.from_user.id
+    
+    if user_id in temp.PAGE_JUMP:
+        try:
+            page_num = int(message.text.strip())
+            jump_data = temp.PAGE_JUMP[user_id]
+            
+            # Get total pages to validate input
+            search = BUTTONS.get(jump_data['key']) or FRESH.get(jump_data['key'])
+            if not search:
+                await message.reply("❌ Search expired. Please start a new search.")
+                del temp.PAGE_JUMP[user_id]
+                return
+            
+            _, _, total = await get_search_results(jump_data['chat_id'], search, offset=0, filter=True)
+            settings = await get_settings(jump_data['chat_id'])
+            items_per_page = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
+            total_pages = math.ceil(total / items_per_page)
+            
+            if 1 <= page_num <= total_pages:
+                new_offset = (page_num - 1) * items_per_page
+                
+                # Trigger navigation to the specified page
+                fake_query_data = f"next_{jump_data['req']}_{jump_data['key']}_{new_offset}"
+                
+                # Create a mock query object and call next_page
+                # This would require adapting the next_page function to handle direct calls
+                await message.reply(f"✅ Jumping to page {page_num}...")
+                
+                # Clean up
+                del temp.PAGE_JUMP[user_id]
+            else:
+                await message.reply(f"❌ Invalid page number. Please enter a number between 1 and {total_pages}")
+                
+        except ValueError:
+            await message.reply("❌ Please enter a valid page number")
+        except Exception as e:
+            await message.reply("❌ Error occurred while jumping to page")
+            LOGGER.error(f"Error in handle_page_jump: {e}")
+            if user_id in temp.PAGE_JUMP:
+                del temp.PAGE_JUMP[user_id]
+				
 @Client.on_callback_query(filters.regex(r"^qualities#"))
 async def qualities_cb_handler(client: Client, query: CallbackQuery):
     try:

@@ -34,5 +34,5 @@ google-generativeai>=0.3.2
 qrcode
 pytesseract
 
-SpeechRecognition==3.10.0
-PyAudio==0.2.11  # For microphone input (optional)
+SpeechRecognition
+PyAudio

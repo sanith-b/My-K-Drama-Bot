@@ -115,8 +115,8 @@ MELCOW_NEW_USERS = is_enabled((environ.get('MELCOW_NEW_USERS', "False")), False)
 PROTECT_CONTENT = is_enabled((environ.get('PROTECT_CONTENT', "False")), True)
 PM_SEARCH = bool(environ.get('PM_SEARCH', True)) 
 EMOJI_MODE = bool(environ.get('EMOJI_MODE', False)) 
-PAID_STREAM = bool(environ.get('PAID_STREAM', True)) 
-STREAM_MODE = bool(environ.get('STREAM_MODE', True))
+PAID_STREAM = bool(environ.get('PAID_STREAM', False)) 
+STREAM_MODE = bool(environ.get('STREAM_MODE', False))
 MAINTENANCE_MODE = bool(environ.get('MAINTENANCE_MODE', False)) 
 
 

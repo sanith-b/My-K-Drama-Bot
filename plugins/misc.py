@@ -11,10 +11,10 @@ import logging
 import json
 
 ##
+import asyncio
 import aiohttp
 from motor.motor_asyncio import AsyncIOMotorClient
 import datetime
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -648,6 +648,11 @@ Send `/poster` or `/identify` by replying to any movie poster image:
         disable_web_page_preview=True
     )
 ###new
+class temp:
+    PAGE_JUMP = 5
+    MAX_RESULTS = 20
+
+# ------------------ UTILITY FUNCTIONS ------------------
 async def get_user_data(user_id):
     """Get or create user data with enhanced error handling"""
     try:
@@ -664,6 +669,28 @@ async def get_user_data(user_id):
             }
             await users.insert_one(user)
             logger.info(f"Created new user: {user_id}")
+        else:
+            # Ensure all required fields exist for existing users
+            update_fields = {}
+            if "watchlist" not in user:
+                update_fields["watchlist"] = []
+            if "favorites" not in user:
+                update_fields["favorites"] = []
+            if "ratings" not in user:
+                update_fields["ratings"] = {}
+            if "preferences" not in user:
+                update_fields["preferences"] = {"genres": [], "countries": []}
+            if "stats" not in user:
+                update_fields["stats"] = {"total_watched": 0, "total_hours": 0}
+            
+            if update_fields:
+                await users.update_one(
+                    {"user_id": user_id},
+                    {"$set": update_fields}
+                )
+                user.update(update_fields)
+                logger.info(f"Updated user fields for {user_id}: {list(update_fields.keys())}")
+        
         return user
     except Exception as e:
         logger.error(f"Error getting user data for {user_id}: {e}")
@@ -673,10 +700,12 @@ async def update_user_stats(user_id):
     """Update user viewing statistics with better error handling"""
     try:
         user = await users.find_one({"user_id": user_id})
-        if not user or "watchlist" not in user:
+        if not user:
             return
         
-        watched_dramas = [d for d in user["watchlist"] if d.get("status") == "Watched"]
+        # Ensure watchlist exists
+        watchlist = user.get("watchlist", [])
+        watched_dramas = [d for d in watchlist if d.get("status") == "Watched"]
         total_episodes = sum(d.get("episode_count", 0) for d in watched_dramas)
         total_hours = total_episodes * AVERAGE_EPISODE_DURATION
         
@@ -699,6 +728,8 @@ def format_drama_title(drama_data):
 
 def truncate_text(text, max_length=300):
     """Truncate text with ellipsis if too long"""
+    if not text:
+        return "No description available"
     if len(text) <= max_length:
         return text
     return text[:max_length] + "..."
@@ -793,10 +824,13 @@ async def get_recommendations(tv_id: int, user_preferences=None):
 async def send_error_message(message, error_text="❌ An error occurred. Please try again later."):
     """Send error message with retry button"""
     buttons = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
-    await message.reply(error_text, reply_markup=InlineKeyboardMarkup(buttons))
+    try:
+        await message.reply(error_text, reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception as e:
+        logger.error(f"Error sending error message: {e}")
 
 # ------------------ MAIN COMMANDS ------------------
-@Client.on_message(filters.command(["uhelp"]))
+@Client.on_message(filters.command(["start", "help", "uhelp"]))
 async def start_command(client, message):
     """Welcome message with quick actions"""
     try:
@@ -807,12 +841,14 @@ async def start_command(client, message):
         username = message.from_user.first_name or "User"
         text = f"🎭 Welcome {username} to K-Drama Bot! 🇰🇷\n\n"
         
-        if user["watchlist"]:
+        # Safely access watchlist with fallback
+        watchlist = user.get("watchlist", [])
+        if watchlist:
             watchlist_stats = {
-                "total": len(user["watchlist"]),
-                "watching": len([d for d in user["watchlist"] if d.get("status") == "Watching"]),
-                "watched": len([d for d in user["watchlist"] if d.get("status") == "Watched"]),
-                "to_watch": len([d for d in user["watchlist"] if d.get("status") == "To Watch"])
+                "total": len(watchlist),
+                "watching": len([d for d in watchlist if d.get("status") == "Watching"]),
+                "watched": len([d for d in watchlist if d.get("status") == "Watched"]),
+                "to_watch": len([d for d in watchlist if d.get("status") == "To Watch"])
             }
             
             text += (f"📺 **Your Stats:**\n"
@@ -845,7 +881,7 @@ async def start_command(client, message):
         logger.error(f"Error in start command: {e}")
         await send_error_message(message)
 
-@Client.on_message(filters.command(["find"]))
+@Client.on_message(filters.command(["search", "find"]))
 async def search_dramas(client, message):
     """Enhanced search command with pagination"""
     try:
@@ -986,7 +1022,10 @@ async def show_watchlist(client, message):
         user_id = message.from_user.id
         user = await users.find_one({"user_id": user_id})
         
-        if not user or "watchlist" not in user or not user["watchlist"]:
+        # Safely check for watchlist
+        watchlist = user.get("watchlist", []) if user else []
+        
+        if not watchlist:
             buttons = [
                 [InlineKeyboardButton("🔥 Browse Popular", callback_data="popular_dramas")],
                 [InlineKeyboardButton("🔍 Search Dramas", callback_data="search_dramas")]
@@ -997,7 +1036,6 @@ async def show_watchlist(client, message):
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
 
-        watchlist = user["watchlist"]
         stats = {
             "total": len(watchlist),
             "watching": len([d for d in watchlist if d.get("status") == "Watching"]),
@@ -1037,7 +1075,10 @@ async def recommend(client, message):
         user_id = message.from_user.id
         user = await users.find_one({"user_id": user_id})
         
-        if not user or "watchlist" not in user or not user["watchlist"]:
+        # Safely access watchlist
+        watchlist = user.get("watchlist", []) if user else []
+        
+        if not watchlist:
             # Show popular dramas for new users
             popular = await get_popular_kdramas()
             if popular:
@@ -1057,7 +1098,7 @@ async def recommend(client, message):
             return await message.reply("📌 Add some dramas to your watchlist first to get personalized recommendations!")
 
         # Get recommendations based on user's viewing history
-        recent_dramas = [d for d in user["watchlist"] if d.get("status") in ["Watched", "Watching"]]
+        recent_dramas = [d for d in watchlist if d.get("status") in ["Watched", "Watching"]]
         if not recent_dramas:
             return await message.reply("📌 Watch some dramas first to get recommendations!")
         
@@ -1109,7 +1150,9 @@ async def profile(client, message):
         username = message.from_user.first_name or message.from_user.username or "User"
         joined = user["joined_date"].strftime("%B %Y")
         
-        if not user["watchlist"]:
+        watchlist = user.get("watchlist", [])
+        
+        if not watchlist:
             text = (f"👤 **{username}'s Profile**\n"
                    f"🗓 Member since: {joined}\n\n"
                    f"📺 No dramas in watchlist yet\n"
@@ -1120,7 +1163,6 @@ async def profile(client, message):
                 [InlineKeyboardButton("🔍 Search Dramas", callback_data="search_dramas")]
             ]
         else:
-            watchlist = user["watchlist"]
             stats = user.get("stats", {})
             
             # Calculate detailed statistics
@@ -1246,7 +1288,7 @@ async def show_drama_details(client, query: CallbackQuery):
         in_watchlist = False
         watchlist_item = None
         
-        if user and "watchlist" in user:
+        if user and user.get("watchlist"):
             for item in user["watchlist"]:
                 if item.get("tv_id") == tv_id:
                     in_watchlist = True
@@ -1307,9 +1349,10 @@ async def confirm_add(client, query: CallbackQuery):
         
         # Check if already exists
         user = await users.find_one({"user_id": user_id})
-        if user and "watchlist" in user:
-            if any(d.get("tv_id") == tv_id for d in user["watchlist"]):
-                return await query.answer("✅ Already in your watchlist!", show_alert=True)
+        watchlist = user.get("watchlist", []) if user else []
+        
+        if any(d.get("tv_id") == tv_id for d in watchlist):
+            return await query.answer("✅ Already in your watchlist!", show_alert=True)
         
         details = await get_tmdb_details(tv_id)
         if not details:
@@ -1366,7 +1409,9 @@ async def filter_watchlist(client, query: CallbackQuery):
         user_id = query.from_user.id
         user = await users.find_one({"user_id": user_id})
         
-        if not user or "watchlist" not in user or not user["watchlist"]:
+        watchlist = user.get("watchlist", []) if user else []
+        
+        if not watchlist:
             return await query.answer("⚠️ Watchlist is empty", show_alert=True)
         
         # Parse callback data
@@ -1379,8 +1424,6 @@ async def filter_watchlist(client, query: CallbackQuery):
             page = int(data_parts[2])
         except ValueError:
             return await query.answer("❌ Invalid page number", show_alert=True)
-        
-        watchlist = user["watchlist"]
         
         # Filter watchlist based on type
         if filter_type == "watching":
@@ -1547,11 +1590,11 @@ async def update_status(client, query: CallbackQuery):
         user_id = query.from_user.id
         user = await users.find_one({"user_id": user_id})
         
-        if not user or "watchlist" not in user:
+        watchlist = user.get("watchlist", []) if user else []
+        if not watchlist:
             return await query.answer("❌ Watchlist not found", show_alert=True)
         
         # Get filtered watchlist
-        watchlist = user["watchlist"]
         if filter_type == "watching":
             filtered = [d for d in watchlist if d.get("status") == "Watching"]
         elif filter_type == "watched":
@@ -1599,10 +1642,11 @@ async def show_watchlist_menu(message):
         user_id = message.chat.id if hasattr(message, 'chat') else message.from_user.id
         user = await users.find_one({"user_id": user_id})
         
-        if not user or not user.get("watchlist"):
+        watchlist = user.get("watchlist", []) if user else []
+        
+        if not watchlist:
             return await message.edit_text("📌 Your watchlist is empty.")
         
-        watchlist = user["watchlist"]
         stats = {
             "total": len(watchlist),
             "watching": len([d for d in watchlist if d.get("status") == "Watching"]),
@@ -1673,11 +1717,11 @@ async def set_rating(client, query: CallbackQuery):
         user_id = query.from_user.id
         user = await users.find_one({"user_id": user_id})
         
-        if not user or "watchlist" not in user:
+        watchlist = user.get("watchlist", []) if user else []
+        if not watchlist:
             return await query.answer("❌ Watchlist not found", show_alert=True)
         
         # Get the correct drama from filtered list
-        watchlist = user["watchlist"]
         if filter_type == "watching":
             filtered = [d for d in watchlist if d.get("status") == "Watching"]
         elif filter_type == "watched":
@@ -1791,12 +1835,8 @@ async def page_info(client, query: CallbackQuery):
     await query.answer("📄 Page information", show_alert=False)
 
 # ------------------ ERROR HANDLING AND CLEANUP ------------------
-import asyncio
-
 @Client.on_callback_query()
 async def handle_unknown_callback(client, query: CallbackQuery):
     """Handle unknown callback queries"""
     logger.warning(f"Unknown callback query: {query.data}")
     await query.answer("❌ Unknown action", show_alert=False)
-
-

@@ -105,8 +105,30 @@ async def SilentXBotz_start():
     await idle()
     
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(SilentXBotz_start())
-    except KeyboardInterrupt:
-        LOGGER.info('Service Stopped Bye 👋')
+    while True:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            LOGGER.info("🚀 Starting bot...")
+            loop.run_until_complete(SilentXBotz_start())
+        except KeyboardInterrupt:
+            LOGGER.info('Service Stopped Bye 👋')
+            break
+        except SystemExit:
+            if restart_flag:
+                LOGGER.info('🔄 Auto restarting bot in 5 seconds...')
+                time.sleep(5)
+                restart_flag = False
+                continue
+            else:
+                LOGGER.info('Service Stopped Bye 👋')
+                break
+        except Exception as e:
+            LOGGER.error(f"❌ Unexpected error: {e}")
+            LOGGER.info('🔄 Restarting bot in 10 seconds...')
+            time.sleep(10)
+        finally:
+            try:
+                loop.close()
+            except:
+                pass

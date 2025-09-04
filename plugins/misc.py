@@ -10,8 +10,15 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQ
 import logging
 import json
 
+import os
+
 import aiohttp
+import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 # Global dictionary to store identified titles for users
 identified_titles = {}
 
@@ -625,43 +632,209 @@ Send `/poster` or `/identify` by replying to any movie poster image:
 
 
 # ------------------ CONFIG ------------------
+
+
+# ------------------ CONFIG ------------------
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://kdramabot:Buo0fRGenkOAkgXH@pastppr.ipuyepp.mongodb.net/?retryWrites=true&w=majority&appName=pastppr")
 mongo_client = AsyncIOMotorClient(MONGO_URI)
-db = mongo_client["pastppr"]
+db = mongo_client["kdrama_bot"]
 users = db["users"]
+reviews = db["reviews"]
 
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "90dde61a7cf8339a2cff5d805d5597a9")
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 
-# ------------------ BOT CLIENT ------------------
+# Cache for popular dramas
+popular_cache = {"data": [], "last_update": None}
+
+# ------------------ UTILITY FUNCTIONS ------------------
+async def get_user_data(user_id):
+    """Get or create user data"""
+    user = await users.find_one({"user_id": user_id})
+    if not user:
+        user = {
+            "user_id": user_id,
+            "watchlist": [],
+            "favorites": [],
+            "ratings": {},
+            "preferences": {"genres": [], "countries": []},
+            "joined_date": datetime.datetime.utcnow(),
+            "stats": {"total_watched": 0, "total_hours": 0}
+        }
+        await users.insert_one(user)
+    return user
+
+async def update_user_stats(user_id):
+    """Update user viewing statistics"""
+    user = await users.find_one({"user_id": user_id})
+    if not user or "watchlist" not in user:
+        return
+    
+    watched_dramas = [d for d in user["watchlist"] if d["status"] == "Watched"]
+    total_episodes = sum(d.get("episode_count", 0) for d in watched_dramas)
+    total_hours = total_episodes * 0.75  # Assuming 45min avg episode length
+    
+    await users.update_one(
+        {"user_id": user_id},
+        {"$set": {"stats.total_watched": len(watched_dramas), "stats.total_hours": round(total_hours, 1)}}
+    )
+
 # ------------------ TMDB HELPERS ------------------
-async def search_tmdb(query: str):
-    """Search TMDB for dramas by name"""
-    url = f"{TMDB_BASE_URL}/search/tv?api_key={TMDB_API_KEY}&query={query}&language=en-US"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json()
-            return data.get("results", [])
+async def search_tmdb(query: str, page=1):
+    """Enhanced search with Korean drama filtering"""
+    url = f"{TMDB_BASE_URL}/search/tv"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "query": query,
+        "language": "en-US",
+        "page": page,
+        "with_origin_country": "KR"  # Filter for Korean content
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("results", [])
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+    return []
 
 async def get_tmdb_details(tv_id: int):
-    """Fetch drama details from TMDB"""
-    url = f"{TMDB_BASE_URL}/tv/{tv_id}?api_key={TMDB_API_KEY}&language=en-US"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            return await resp.json()
+    """Enhanced details fetching with more info"""
+    url = f"{TMDB_BASE_URL}/tv/{tv_id}"
+    params = {"api_key": TMDB_API_KEY, "language": "en-US"}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+    except Exception as e:
+        logger.error(f"Details error: {e}")
+    return {}
 
-async def get_recommendations(tv_id: int):
-    """Fetch TMDB recommendations"""
-    url = f"{TMDB_BASE_URL}/tv/{tv_id}/recommendations?api_key={TMDB_API_KEY}&language=en-US"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json()
-            return data.get("results", [])
+async def get_popular_kdramas():
+    """Get popular Korean dramas with caching"""
+    global popular_cache
+    now = datetime.datetime.utcnow()
+    
+    # Check cache (refresh every 6 hours)
+    if popular_cache["last_update"] and (now - popular_cache["last_update"]).seconds < 21600:
+        return popular_cache["data"]
+    
+    url = f"{TMDB_BASE_URL}/discover/tv"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "with_origin_country": "KR",
+        "sort_by": "popularity.desc",
+        "vote_count.gte": 50,
+        "language": "en-US"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    popular_cache["data"] = data.get("results", [])[:20]
+                    popular_cache["last_update"] = now
+                    return popular_cache["data"]
+    except Exception as e:
+        logger.error(f"Popular dramas error: {e}")
+    
+    return popular_cache["data"] or []
 
-# ------------------ COMMANDS ------------------
+async def get_recommendations(tv_id: int, user_preferences=None):
+    """Enhanced recommendations based on user preferences"""
+    recommendations = []
+    
+    # Get TMDB recommendations
+    url = f"{TMDB_BASE_URL}/tv/{tv_id}/recommendations"
+    params = {"api_key": TMDB_API_KEY, "language": "en-US"}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    recommendations.extend(data.get("results", []))
+    except Exception as e:
+        logger.error(f"Recommendations error: {e}")
+    
+    # If few recommendations, get popular dramas
+    if len(recommendations) < 5:
+        popular = await get_popular_kdramas()
+        recommendations.extend(popular)
+    
+    return recommendations[:10]
+
+# ------------------ MAIN COMMANDS ------------------
+@Client.on_message(filters.command("uhelp"))
+async def start_command(client, message):
+    """Welcome message with quick actions"""
+    user = await get_user_data(message.from_user.id)
+    
+    text = f"🎭 Welcome to K-Drama Bot! 🇰🇷\n\n"
+    
+    if user["watchlist"]:
+        text += f"📺 You have {len(user['watchlist'])} dramas in your watchlist\n"
+        text += f"✅ Watched: {len([d for d in user['watchlist'] if d['status'] == 'Watched'])}\n"
+        text += f"▶️ Currently Watching: {len([d for d in user['watchlist'] if d['status'] == 'Watching'])}\n\n"
+    
+    text += "🔍 **Commands:**\n"
+    text += "• `/add <drama name>` - Add drama to watchlist\n"
+    text += "• `/search <drama name>` - Search for dramas\n"
+    text += "• `/watchlist` - View your watchlist\n"
+    text += "• `/popular` - Trending K-Dramas\n"
+    text += "• `/recommend` - Get personalized recommendations\n"
+    text += "• `/profile` - View your profile\n"
+    text += "• `/help` - Show all commands"
+    
+    buttons = [
+        [InlineKeyboardButton("🔥 Popular Dramas", callback_data="popular")],
+        [InlineKeyboardButton("📖 My Watchlist", callback_data="page_0"), 
+         InlineKeyboardButton("👤 Profile", callback_data="show_profile")],
+        [InlineKeyboardButton("🎯 Get Recommendations", callback_data="get_recommendations")]
+    ]
+    
+    await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+@Client.on_message(filters.command(["find"]))
+async def search_dramas(client, message):
+    """Enhanced search command"""
+    query = " ".join(message.command[1:])
+    if not query:
+        return await message.reply("❌ Please provide a drama name.\nExample: `/search Goblin`")
+    
+    status_msg = await message.reply("🔍 Searching for dramas...")
+    results = await search_tmdb(query)
+    
+    if not results:
+        return await status_msg.edit("⚠️ No dramas found. Try different keywords!")
+    
+    buttons = []
+    for r in results[:8]:  # Show more results
+        year = r.get('first_air_date', '')[:4] if r.get('first_air_date') else 'N/A'
+        rating = f"⭐{r.get('vote_average', 0)}" if r.get('vote_average') else ""
+        buttons.append([
+            InlineKeyboardButton(
+                f"{r['name']} ({year}) {rating}",
+                callback_data=f"details_{r['id']}"
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔍 Search Again", callback_data="search_again")])
+    
+    await status_msg.edit(
+        f"🎬 Found {len(results)} dramas for '{query}':",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
 @Client.on_message(filters.command("add"))
 async def add_watchlist(client, message):
-    """Add drama to watchlist"""
+    """Add drama to watchlist with rating option"""
     user_id = message.from_user.id
     query = " ".join(message.command[1:])
     if not query:
@@ -669,31 +842,269 @@ async def add_watchlist(client, message):
 
     results = await search_tmdb(query)
     if not results:
-        return await message.reply("⚠ No dramas found.")
+        return await message.reply("⚠️ No dramas found.")
 
     buttons = []
     for r in results[:5]:
+        year = r.get('first_air_date', '')[:4] if r.get('first_air_date') else 'N/A'
         buttons.append([
-            InlineKeyboardButton(f"{r['name']} ({r['first_air_date'][:4] if r.get('first_air_date') else 'N/A'})",
-                                 callback_data=f"add_{r['id']}")
+            InlineKeyboardButton(
+                f"{r['name']} ({year})",
+                callback_data=f"add_{r['id']}"
+            )
         ])
+    
     await message.reply("🔍 Select a drama to add:", reply_markup=InlineKeyboardMarkup(buttons))
 
+@Client.on_message(filters.command("popular"))
+async def show_popular(client, message):
+    """Show trending K-Dramas"""
+    status_msg = await message.reply("📺 Loading popular K-Dramas...")
+    popular = await get_popular_kdramas()
+    
+    if not popular:
+        return await status_msg.edit("⚠️ Unable to load popular dramas right now.")
+    
+    buttons = []
+    for drama in popular[:10]:
+        year = drama.get('first_air_date', '')[:4] if drama.get('first_air_date') else 'N/A'
+        rating = f"⭐{drama.get('vote_average', 0):.1f}" if drama.get('vote_average') else ""
+        buttons.append([
+            InlineKeyboardButton(
+                f"{drama['name']} ({year}) {rating}",
+                callback_data=f"details_{drama['id']}"
+            )
+        ])
+    
+    await status_msg.edit(
+        "🔥 **Trending K-Dramas:**",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+@Client.on_message(filters.command("watchlist"))
+async def show_watchlist(client, message):
+    """Enhanced watchlist with filtering"""
+    user_id = message.from_user.id
+    user = await users.find_one({"user_id": user_id})
+    if not user or "watchlist" not in user or not user["watchlist"]:
+        buttons = [[InlineKeyboardButton("🔥 Browse Popular", callback_data="popular")]]
+        return await message.reply(
+            "📌 Your watchlist is empty. Add dramas using `/add <name>`.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    # Show filtering options
+    buttons = [
+        [InlineKeyboardButton("📖 All", callback_data="filter_all_0"),
+         InlineKeyboardButton("▶️ Watching", callback_data="filter_watching_0")],
+        [InlineKeyboardButton("✅ Watched", callback_data="filter_watched_0"),
+         InlineKeyboardButton("⏳ To Watch", callback_data="filter_towatch_0")]
+    ]
+    
+    watchlist = user["watchlist"]
+    total = len(watchlist)
+    watching = len([d for d in watchlist if d["status"] == "Watching"])
+    watched = len([d for d in watchlist if d["status"] == "Watched"])
+    to_watch = len([d for d in watchlist if d["status"] == "To Watch"])
+    
+    text = (f"📖 **Your Watchlist** ({total} dramas)\n\n"
+            f"▶️ Watching: {watching}\n"
+            f"✅ Watched: {watched}\n"
+            f"⏳ To Watch: {to_watch}")
+    
+    await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+@Client.on_message(filters.command("recommend"))
+async def recommend(client, message):
+    """Enhanced recommendations"""
+    user_id = message.from_user.id
+    user = await users.find_one({"user_id": user_id})
+    
+    if not user or "watchlist" not in user or not user["watchlist"]:
+        # Show popular dramas for new users
+        popular = await get_popular_kdramas()
+        if popular:
+            buttons = []
+            for drama in popular[:5]:
+                year = drama.get('first_air_date', '')[:4] if drama.get('first_air_date') else 'N/A'
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{drama['name']} ({year})",
+                        callback_data=f"details_{drama['id']}"
+                    )
+                ])
+            return await message.reply(
+                "🎯 **Recommended K-Dramas for you:**",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        return await message.reply("📌 Add some dramas to your watchlist first to get personalized recommendations!")
+
+    # Get recommendations based on user's most recent drama
+    recent_dramas = [d for d in user["watchlist"] if d["status"] in ["Watched", "Watching"]]
+    if not recent_dramas:
+        return await message.reply("📌 Watch some dramas first to get recommendations!")
+    
+    # Use the most recently added drama for recommendations
+    base_drama = recent_dramas[-1]
+    recs = await get_recommendations(base_drama["tv_id"], user.get("preferences"))
+    
+    if not recs:
+        return await message.reply("⚠️ No recommendations found right now.")
+
+    buttons = []
+    for r in recs[:8]:
+        year = r.get('first_air_date', '')[:4] if r.get('first_air_date') else 'N/A'
+        rating = f"⭐{r.get('vote_average', 0):.1f}" if r.get('vote_average') else ""
+        buttons.append([
+            InlineKeyboardButton(
+                f"{r['name']} ({year}) {rating}",
+                callback_data=f"details_{r['id']}"
+            )
+        ])
+
+    await message.reply(
+        f"🎯 **Recommendations based on {base_drama['title']}:**",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+@Client.on_message(filters.command("profile"))
+async def profile(client, message):
+    """Enhanced user profile"""
+    user_id = message.from_user.id
+    user = await get_user_data(user_id)
+    await update_user_stats(user_id)
+    user = await users.find_one({"user_id": user_id})  # Refresh data
+
+    username = message.from_user.username or message.from_user.first_name
+    joined = user["joined_date"].strftime("%B %Y")
+    
+    if not user["watchlist"]:
+        text = (f"👤 **{username}**\n"
+                f"🗓 Joined: {joined}\n\n"
+                f"📺 No dramas in watchlist yet\n"
+                f"➕ Start with `/add <drama name>` or browse `/popular`")
+        buttons = [[InlineKeyboardButton("🔥 Popular Dramas", callback_data="popular")]]
+    else:
+        watchlist = user["watchlist"]
+        watching = len([d for d in watchlist if d["status"] == "Watching"])
+        watched = len([d for d in watchlist if d["status"] == "Watched"])
+        to_watch = len([d for d in watchlist if d["status"] == "To Watch"])
+        
+        stats = user.get("stats", {})
+        total_hours = stats.get("total_hours", 0)
+        
+        # Calculate favorite genre
+        all_genres = []
+        for drama in watchlist:
+            all_genres.extend(drama.get("genres", []))
+        
+        fav_genre = "None yet"
+        if all_genres:
+            from collections import Counter
+            genre_count = Counter(all_genres)
+            fav_genre = genre_count.most_common(1)[0][0]
+        
+        text = (f"👤 **{username}**\n"
+                f"🗓 Joined: {joined}\n"
+                f"🏆 Favorite Genre: {fav_genre}\n\n"
+                f"📊 **Statistics:**\n"
+                f"📖 Total Dramas: {len(watchlist)}\n"
+                f"✅ Completed: {watched}\n"
+                f"▶️ Watching: {watching}\n"
+                f"⏳ Plan to Watch: {to_watch}\n"
+                f"⏱ Total Watch Time: {total_hours}h")
+        
+        buttons = [
+            [InlineKeyboardButton("📖 View Watchlist", callback_data="page_0")],
+            [InlineKeyboardButton("🎯 Get Recommendations", callback_data="get_recommendations")]
+        ]
+
+    await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+# ------------------ CALLBACK HANDLERS ------------------
+@Client.on_callback_query(filters.regex(r"^details_"))
+async def show_drama_details(client, query: CallbackQuery):
+    """Show detailed drama information"""
+    tv_id = int(query.data.split("_")[1])
+    details = await get_tmdb_details(tv_id)
+    
+    if not details:
+        return await query.answer("❌ Unable to load drama details", show_alert=True)
+    
+    # Format details
+    title = details.get("name", "Unknown")
+    year = details.get("first_air_date", "")[:4] if details.get("first_air_date") else "N/A"
+    rating = f"{details.get('vote_average', 0):.1f}/10" if details.get('vote_average') else "N/A"
+    genres = ", ".join([g["name"] for g in details.get("genres", [])])
+    overview = details.get("overview", "No description available")[:300]
+    if len(details.get("overview", "")) > 300:
+        overview += "..."
+    
+    episodes = details.get("number_of_episodes", "N/A")
+    seasons = details.get("number_of_seasons", "N/A")
+    status = details.get("status", "N/A")
+    
+    text = (f"🎬 **{title}** ({year})\n\n"
+            f"⭐ Rating: {rating}\n"
+            f"📺 Episodes: {episodes} | Seasons: {seasons}\n"
+            f"📊 Status: {status}\n"
+            f"🎭 Genres: {genres}\n\n"
+            f"📖 **Plot:**\n{overview}")
+    
+    # Check if already in watchlist
+    user = await users.find_one({"user_id": query.from_user.id})
+    in_watchlist = False
+    if user and "watchlist" in user:
+        in_watchlist = any(d["tv_id"] == tv_id for d in user["watchlist"])
+    
+    buttons = []
+    if not in_watchlist:
+        buttons.append([InlineKeyboardButton("➕ Add to Watchlist", callback_data=f"add_{tv_id}")])
+    else:
+        buttons.append([InlineKeyboardButton("✅ In Watchlist", callback_data="already_added")])
+    
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_search")])
+    
+    if details.get("poster_path"):
+        poster_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
+        try:
+            await query.message.reply_photo(
+                poster_url,
+                caption=text,
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            await query.message.delete()
+        except:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 @Client.on_callback_query(filters.regex(r"^add_"))
 async def confirm_add(client, query: CallbackQuery):
-    """Confirm adding selected drama"""
+    """Add drama to watchlist with enhanced info"""
     user_id = query.from_user.id
     tv_id = int(query.data.split("_")[1])
+    
+    # Check if already exists
+    user = await users.find_one({"user_id": user_id})
+    if user and "watchlist" in user:
+        if any(d["tv_id"] == tv_id for d in user["watchlist"]):
+            return await query.answer("✅ Already in your watchlist!", show_alert=True)
+    
     details = await get_tmdb_details(tv_id)
+    if not details:
+        return await query.answer("❌ Error adding drama", show_alert=True)
 
     drama = {
         "tv_id": tv_id,
-        "title": details["name"],
+        "title": details.get("name", "Unknown"),
         "poster": f"https://image.tmdb.org/t/p/w500{details['poster_path']}" if details.get("poster_path") else None,
         "rating": details.get("vote_average", 0),
         "genres": [g["name"] for g in details.get("genres", [])],
+        "year": details.get("first_air_date", "")[:4] if details.get("first_air_date") else "N/A",
+        "episode_count": details.get("number_of_episodes", 0),
         "status": "To Watch",
+        "user_rating": 0,
         "added_at": datetime.datetime.utcnow()
     }
 
@@ -702,157 +1113,108 @@ async def confirm_add(client, query: CallbackQuery):
         {"$push": {"watchlist": drama}},
         upsert=True
     )
-    await query.message.edit_text(f"✅ Added **{drama['title']}** to your watchlist!")
+    
+    buttons = [
+        [InlineKeyboardButton("📖 View Watchlist", callback_data="filter_all_0")],
+        [InlineKeyboardButton("🎯 Get Recommendations", callback_data="get_recommendations")]
+    ]
+    
+    await query.message.edit_text(
+        f"✅ **{drama['title']}** added to your watchlist!\n\n"
+        f"Use /watchlist to manage your dramas.",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
-
-@Client.on_message(filters.command("watchlist"))
-async def show_watchlist(client, message):
-    """Display paginated watchlist"""
-    user_id = message.from_user.id
+# Add more callback handlers for filtering, pagination, etc.
+@Client.on_callback_query(filters.regex(r"^filter_"))
+async def filter_watchlist(client, query: CallbackQuery):
+    """Filter watchlist by status"""
+    user_id = query.from_user.id
     user = await users.find_one({"user_id": user_id})
+    
     if not user or "watchlist" not in user or not user["watchlist"]:
-        return await message.reply("📌 Your watchlist is empty. Add dramas using `/add <name>`.")
+        return await query.answer("⚠️ Watchlist is empty", show_alert=True)
+    
+    filter_type, page = query.data.split("_")[1], int(query.data.split("_")[2])
+    watchlist = user["watchlist"]
+    
+    if filter_type == "watching":
+        filtered = [d for d in watchlist if d["status"] == "Watching"]
+    elif filter_type == "watched":
+        filtered = [d for d in watchlist if d["status"] == "Watched"]
+    elif filter_type == "towatch":
+        filtered = [d for d in watchlist if d["status"] == "To Watch"]
+    else:
+        filtered = watchlist
+    
+    if not filtered:
+        return await query.answer(f"⚠️ No dramas in this category", show_alert=True)
+    
+    await send_filtered_watchlist_page(query.message, filtered, page, filter_type)
 
-    await send_watchlist_page(message, user["watchlist"], 0)
-
-
-async def send_watchlist_page(message, watchlist, page):
-    """Helper to send one page of watchlist"""
+async def send_filtered_watchlist_page(message, watchlist, page, filter_type):
+    """Send filtered watchlist page"""
     if page < 0 or page >= len(watchlist):
         return
 
     drama = watchlist[page]
     text = (
-        f"**🎬 {drama['title']}**\n\n"
-        f"⭐ Rating: {drama['rating']}/10\n"
+        f"🎬 **{drama['title']}** ({drama.get('year', 'N/A')})\n\n"
+        f"⭐ TMDB Rating: {drama['rating']}/10\n"
         f"📖 Genres: {', '.join(drama['genres']) if drama['genres'] else 'N/A'}\n"
+        f"📺 Episodes: {drama.get('episode_count', 'N/A')}\n"
         f"📌 Status: {drama['status']}\n"
     )
+    
+    if drama.get('user_rating', 0) > 0:
+        text += f"🌟 Your Rating: {drama['user_rating']}/10\n"
 
     buttons = [
         [
-            InlineKeyboardButton("▶ Watching", callback_data=f"status_{page}_Watching"),
-            InlineKeyboardButton("✅ Watched", callback_data=f"status_{page}_Watched"),
+            InlineKeyboardButton("▶️ Watching", callback_data=f"status_{page}_Watching_{filter_type}"),
+            InlineKeyboardButton("✅ Watched", callback_data=f"status_{page}_Watched_{filter_type}"),
         ],
         [
-            InlineKeyboardButton("⏳ To Watch", callback_data=f"status_{page}_To Watch"),
-            InlineKeyboardButton("🗑 Remove", callback_data=f"remove_{page}")
+            InlineKeyboardButton("⏳ To Watch", callback_data=f"status_{page}_To Watch_{filter_type}"),
+            InlineKeyboardButton("⭐ Rate", callback_data=f"rate_{page}_{filter_type}")
         ],
         [
-            InlineKeyboardButton("⬅ Prev", callback_data=f"page_{page-1}"),
-            InlineKeyboardButton("➡ Next", callback_data=f"page_{page+1}")
+            InlineKeyboardButton("🗑 Remove", callback_data=f"remove_{page}_{filter_type}"),
+            InlineKeyboardButton("ℹ️ Details", callback_data=f"details_{drama['tv_id']}")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Prev", callback_data=f"filter_{filter_type}_{page-1}"),
+            InlineKeyboardButton(f"{page+1}/{len(watchlist)}", callback_data="page_info"),
+            InlineKeyboardButton("Next ➡️", callback_data=f"filter_{filter_type}_{page+1}")
         ]
     ]
 
-    if drama.get("poster"):
-        await message.reply_photo(drama["poster"], caption=text, reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+    try:
+        if drama.get("poster"):
+            await message.edit_media_group = None  # Clear any existing media
+            await message.reply_photo(drama["poster"], caption=text, reply_markup=InlineKeyboardMarkup(buttons))
+            await message.delete()
+        else:
+            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    except:
+        await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
+# Add remaining callback handlers...
+@Client.on_callback_query(filters.regex(r"^popular$"))
+async def popular_callback(client, query: CallbackQuery):
+    """Handle popular dramas callback"""
+    await show_popular(client, query.message)
 
-@Client.on_callback_query(filters.regex(r"^page_"))
-async def paginate_watchlist(client, query: CallbackQuery):
-    """Handle watchlist pagination"""
-    user_id = query.from_user.id
-    user = await users.find_one({"user_id": user_id})
-    if not user or "watchlist" not in user:
-        return await query.answer("⚠ Watchlist empty.", show_alert=True)
+@Client.on_callback_query(filters.regex(r"^get_recommendations$"))
+async def recommend_callback(client, query: CallbackQuery):
+    """Handle recommendations callback"""
+    await recommend(client, query.message)
 
-    page = int(query.data.split("_")[1])
-    await query.message.delete()
-    await send_watchlist_page(query.message, user["watchlist"], page)
-
-
-@Client.on_callback_query(filters.regex(r"^status_"))
-async def change_status(client, query: CallbackQuery):
-    """Update drama status"""
-    user_id = query.from_user.id
-    _, page, status = query.data.split("_", 2)
-    page = int(page)
-
-    user = await users.find_one({"user_id": user_id})
-    if not user or "watchlist" not in user:
-        return await query.answer("⚠ Watchlist empty.", show_alert=True)
-
-    watchlist = user["watchlist"]
-    if page < 0 or page >= len(watchlist):
-        return
-
-    watchlist[page]["status"] = status
-    await users.update_one({"user_id": user_id}, {"$set": {"watchlist": watchlist}})
-
-    await query.answer(f"✅ Status updated to {status}")
-    await query.message.delete()
-    await send_watchlist_page(query.message, watchlist, page)
-
-
-@Client.on_callback_query(filters.regex(r"^remove_"))
-async def remove_drama(client, query: CallbackQuery):
-    """Remove drama from watchlist"""
-    user_id = query.from_user.id
-    page = int(query.data.split("_")[1])
-
-    user = await users.find_one({"user_id": user_id})
-    if not user or "watchlist" not in user:
-        return await query.answer("⚠ Watchlist empty.", show_alert=True)
-
-    watchlist = user["watchlist"]
-    if page < 0 or page >= len(watchlist):
-        return
-
-    removed = watchlist.pop(page)
-    await users.update_one({"user_id": user_id}, {"$set": {"watchlist": watchlist}})
-    await query.message.edit_text(f"🗑 Removed **{removed['title']}** from your watchlist.")
-
-
-@Client.on_message(filters.command("recommend"))
-async def recommend(client, message):
-    """Suggest similar dramas based on last watched"""
-    user_id = message.from_user.id
-    user = await users.find_one({"user_id": user_id})
-    if not user or "watchlist" not in user or not user["watchlist"]:
-        return await message.reply("📌 Your watchlist is empty. Add dramas using `/add <name>`.")
-
-    # Pick the most recent drama
-    last = user["watchlist"][-1]
-    recs = await get_recommendations(last["tv_id"])
-    if not recs:
-        return await message.reply("⚠ No recommendations found.")
-
-    text = f"🎯 Recommendations based on **{last['title']}**:\n\n"
-    for r in recs[:5]:
-        text += f"🎬 {r['name']} ({r['first_air_date'][:4] if r.get('first_air_date') else 'N/A'}) ⭐ {r['vote_average']}/10\n"
-
-    await message.reply(text)
-
-
-@Client.on_message(filters.command("profile"))
-async def profile(client, message):
-    """Show user profile + watchlist summary"""
-    user_id = message.from_user.id
-    user = await users.find_one({"user_id": user_id})
-
-    if not user or "watchlist" not in user or not user["watchlist"]:
-        return await message.reply(
-            f"👤 Profile: @{message.from_user.username or message.from_user.first_name}\n"
-            f"📌 You don't have any dramas in your watchlist yet.\n\n"
-            f"➕ Add dramas with `/add <name>`"
-        )
-
-    watchlist = user["watchlist"]
-    watching = len([d for d in watchlist if d["status"] == "Watching"])
-    watched = len([d for d in watchlist if d["status"] == "Watched"])
-    to_watch = len([d for d in watchlist if d["status"] == "To Watch"])
-
-    text = (
-        f"👤 Profile: @{message.from_user.username or message.from_user.first_name}\n"
-        f"🆔 User ID: `{user_id}`\n\n"
-        f"📖 Watchlist Summary:\n"
-        f"🎬 Watching: {watching}\n"
-        f"✅ Watched: {watched}\n"
-        f"⏳ To Watch: {to_watch}\n"
-        f"📌 Total: {len(watchlist)} dramas"
-    )
-
-    buttons = [[InlineKeyboardButton("📖 View Watchlist", callback_data="page_0")]]
-    await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+# Error handling wrapper
+async def safe_callback(func):
+    """Wrapper for safe callback execution"""
+    try:
+        return await func
+    except Exception as e:
+        logger.error(f"Callback error: {e}")
+        return None

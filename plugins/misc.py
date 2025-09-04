@@ -1129,75 +1129,155 @@ async def confirm_add(client, query: CallbackQuery):
 @Client.on_callback_query(filters.regex(r"^filter_"))
 async def filter_watchlist(client, query: CallbackQuery):
     """Filter watchlist by status"""
-    user_id = query.from_user.id
-    user = await users.find_one({"user_id": user_id})
-    
-    if not user or "watchlist" not in user or not user["watchlist"]:
-        return await query.answer("⚠️ Watchlist is empty", show_alert=True)
-    
-    filter_type, page = query.data.split("_")[1], int(query.data.split("_")[2])
-    watchlist = user["watchlist"]
-    
-    if filter_type == "watching":
-        filtered = [d for d in watchlist if d["status"] == "Watching"]
-    elif filter_type == "watched":
-        filtered = [d for d in watchlist if d["status"] == "Watched"]
-    elif filter_type == "towatch":
-        filtered = [d for d in watchlist if d["status"] == "To Watch"]
-    else:
-        filtered = watchlist
-    
-    if not filtered:
-        return await query.answer(f"⚠️ No dramas in this category", show_alert=True)
-    
-    await send_filtered_watchlist_page(query.message, filtered, page, filter_type)
+    try:
+        user_id = query.from_user.id
+        user = await users.find_one({"user_id": user_id})
+        
+        if not user or "watchlist" not in user or not user["watchlist"]:
+            return await query.answer("⚠️ Watchlist is empty", show_alert=True)
+        
+        # Parse callback data more safely
+        data_parts = query.data.split("_")
+        if len(data_parts) < 3:
+            return await query.answer("❌ Invalid request", show_alert=True)
+            
+        filter_type = data_parts[1]
+        try:
+            page = int(data_parts[2])
+        except ValueError:
+            return await query.answer("❌ Invalid page number", show_alert=True)
+        
+        watchlist = user["watchlist"]
+        
+        # Filter watchlist based on type
+        if filter_type == "watching":
+            filtered = [d for d in watchlist if d.get("status") == "Watching"]
+        elif filter_type == "watched":
+            filtered = [d for d in watchlist if d.get("status") == "Watched"]
+        elif filter_type == "towatch":
+            filtered = [d for d in watchlist if d.get("status") == "To Watch"]
+        elif filter_type == "all":
+            filtered = watchlist
+        else:
+            return await query.answer("❌ Invalid filter type", show_alert=True)
+        
+        if not filtered:
+            status_name = {
+                "watching": "Watching",
+                "watched": "Watched", 
+                "towatch": "To Watch",
+                "all": "All"
+            }.get(filter_type, "this category")
+            return await query.answer(f"⚠️ No dramas in {status_name}", show_alert=True)
+        
+        # Validate page number
+        if page < 0 or page >= len(filtered):
+            return await query.answer("❌ Invalid page", show_alert=True)
+        
+        await send_filtered_watchlist_page(query.message, filtered, page, filter_type)
+        await query.answer()  # Acknowledge the callback
+        
+    except Exception as e:
+        print(f"Error in filter_watchlist: {e}")
+        await query.answer("❌ An error occurred", show_alert=True)
+
 
 async def send_filtered_watchlist_page(message, watchlist, page, filter_type):
     """Send filtered watchlist page"""
-    if page < 0 or page >= len(watchlist):
-        return
-
-    drama = watchlist[page]
-    text = (
-        f"🎬 **{drama['title']}** ({drama.get('year', 'N/A')})\n\n"
-        f"⭐ TMDB Rating: {drama['rating']}/10\n"
-        f"📖 Genres: {', '.join(drama['genres']) if drama['genres'] else 'N/A'}\n"
-        f"📺 Episodes: {drama.get('episode_count', 'N/A')}\n"
-        f"📌 Status: {drama['status']}\n"
-    )
-    
-    if drama.get('user_rating', 0) > 0:
-        text += f"🌟 Your Rating: {drama['user_rating']}/10\n"
-
-    buttons = [
-        [
-            InlineKeyboardButton("▶️ Watching", callback_data=f"status_{page}_Watching_{filter_type}"),
-            InlineKeyboardButton("✅ Watched", callback_data=f"status_{page}_Watched_{filter_type}"),
-        ],
-        [
-            InlineKeyboardButton("⏳ To Watch", callback_data=f"status_{page}_To Watch_{filter_type}"),
-            InlineKeyboardButton("⭐ Rate", callback_data=f"rate_{page}_{filter_type}")
-        ],
-        [
-            InlineKeyboardButton("🗑 Remove", callback_data=f"remove_{page}_{filter_type}"),
-            InlineKeyboardButton("ℹ️ Details", callback_data=f"details_{drama['tv_id']}")
-        ],
-        [
-            InlineKeyboardButton("⬅️ Prev", callback_data=f"filter_{filter_type}_{page-1}"),
-            InlineKeyboardButton(f"{page+1}/{len(watchlist)}", callback_data="page_info"),
-            InlineKeyboardButton("Next ➡️", callback_data=f"filter_{filter_type}_{page+1}")
-        ]
-    ]
-
     try:
-        if drama.get("poster"):
-            await message.edit_media_group = None  # Clear any existing media
-            await message.reply_photo(drama["poster"], caption=text, reply_markup=InlineKeyboardMarkup(buttons))
-            await message.delete()
+        if page < 0 or page >= len(watchlist):
+            return
+            
+        drama = watchlist[page]
+        
+        # Build drama info text
+        text = f"🎬 **{drama.get('title', 'Unknown Title')}**"
+        if drama.get('year'):
+            text += f" ({drama['year']})"
+        text += "\n\n"
+        
+        text += f"⭐ TMDB Rating: {drama.get('rating', 'N/A')}/10\n"
+        
+        genres = drama.get('genres', [])
+        if isinstance(genres, list) and genres:
+            text += f"📖 Genres: {', '.join(genres)}\n"
         else:
-            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-    except:
-        await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+            text += f"📖 Genres: N/A\n"
+            
+        text += f"📺 Episodes: {drama.get('episode_count', 'N/A')}\n"
+        text += f"📌 Status: {drama.get('status', 'Unknown')}\n"
+        
+        if drama.get('user_rating', 0) > 0:
+            text += f"🌟 Your Rating: {drama['user_rating']}/10\n"
+        
+        # Create inline keyboard buttons
+        buttons = [
+            [
+                InlineKeyboardButton("▶️ Watching", callback_data=f"status_{page}_Watching_{filter_type}"),
+                InlineKeyboardButton("✅ Watched", callback_data=f"status_{page}_Watched_{filter_type}"),
+            ],
+            [
+                InlineKeyboardButton("⏳ To Watch", callback_data=f"status_{page}_To Watch_{filter_type}"),
+                InlineKeyboardButton("⭐ Rate", callback_data=f"rate_{page}_{filter_type}")
+            ],
+            [
+                InlineKeyboardButton("🗑 Remove", callback_data=f"remove_{page}_{filter_type}"),
+                InlineKeyboardButton("ℹ️ Details", callback_data=f"details_{drama.get('tv_id', '')}")
+            ],
+        ]
+        
+        # Navigation buttons
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"filter_{filter_type}_{page-1}"))
+        
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{len(watchlist)}", callback_data="page_info"))
+        
+        if page < len(watchlist) - 1:
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"filter_{filter_type}_{page+1}"))
+        
+        buttons.append(nav_buttons)
+        
+        # Add back to filters button
+        buttons.append([InlineKeyboardButton("🔙 Back to Filters", callback_data="show_filters")])
+        
+        reply_markup = InlineKeyboardMarkup(buttons)
+        
+        # Try to send with poster, fall back to text only
+        if drama.get("poster"):
+            try:
+                # If current message has photo, edit it
+                if message.photo:
+                    await message.edit_media(
+                        InputMediaPhoto(drama["poster"], caption=text, parse_mode="Markdown"),
+                        reply_markup=reply_markup
+                    )
+                else:
+                    # Delete current message and send new photo message
+                    new_message = await message.reply_photo(
+                        drama["poster"], 
+                        caption=text, 
+                        reply_markup=reply_markup,
+                        parse_mode="Markdown"
+                    )
+                    await message.delete()
+                    return new_message
+            except Exception as e:
+                print(f"Error sending photo: {e}")
+                # Fall back to text message
+                await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        else:
+            await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+            
+    except Exception as e:
+        print(f"Error in send_filtered_watchlist_page: {e}")
+        try:
+            await message.edit_text(
+                "❌ Error loading watchlist page", 
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back to Filters", callback_data="show_filters")
+                ]])
+            )
 
 # Add remaining callback handlers...
 @Client.on_callback_query(filters.regex(r"^popular$"))

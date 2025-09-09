@@ -1618,11 +1618,34 @@ async def auto_filter(client, msg, spoll=False):
         else:
             return
     else:
-        message = msg.message.reply_to_message
+        # Handle spoll case - msg is actually a CallbackQuery object
+        if hasattr(msg, 'message'):
+            # msg is a CallbackQuery
+            message = msg.message.reply_to_message
+            if not message:
+                # If there's no reply_to_message, create a fake message object
+                class FakeMessage:
+                    def __init__(self, chat_id, from_user, text=""):
+                        self.chat = type('obj', (object,), {'id': chat_id})
+                        self.from_user = from_user
+                        self.text = text
+                        self.id = msg.message.id
+                
+                message = FakeMessage(msg.message.chat.id, msg.from_user)
+        else:
+            # msg is already a message object
+            message = msg
+            
         search, files, offset, total_results = spoll
         m = await message.reply_text(f'<b>🕐 Hold on... {message.from_user.mention} Searching for your query: <i>{search}...</i></b>', reply_to_message_id=message.id)
         settings = await get_settings(message.chat.id)
-        await msg.message.delete()
+        
+        # Delete the spoll message if it exists
+        if hasattr(msg, 'message'):
+            try:
+                await msg.message.delete()
+            except:
+                pass
     
     key = f"{message.chat.id}-{message.id}"
     FRESH[key] = search

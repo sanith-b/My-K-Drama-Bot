@@ -36,5 +36,4 @@ pytesseract
 
 SpeechRecognition
 python-Levenshtein  # optional, speeds up fuzzywuzzy
-tracemalloc
 loguru

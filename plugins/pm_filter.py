@@ -846,28 +846,42 @@ async def filter_season_cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^spol"))
 async def advantage_spoll_choker(bot, query):
-    _, id, user = query.data.split('#')
+    try:
+        _, id, user = query.data.split("#")
+    except ValueError:
+        return await query.answer("❌ Invalid callback data", show_alert=True)
+
     if int(user) != 0 and query.from_user.id != int(user):
         return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+
     movies = await get_poster(id, id=True)
-    movie = movies.get('title')
-    movie = re.sub(r"[:-]", " ", movie)
-    movie = re.sub(r"\s+", " ", movie).strip()
+    movie = re.sub(r"[:\-]+|\s+", " ", movies.get("title", "")).strip()
+
     await query.answer(script.TOP_ALRT_MSG)
+
     files, offset, total_results = await get_search_results(query.message.chat.id, movie, offset=0, filter=True)
+
     if files:
         k = (movie, files, offset, total_results)
         await auto_filter(bot, query, k)
     else:
-        reqstr1 = query.from_user.id if query.from_user else 0
-        reqstr = await bot.get_users(reqstr1)
+        req_user = query.from_user
         if NO_RESULTS_MSG:
-            await bot.send_message(chat_id=BIN_CHANNEL,text=script.NORSLTS.format(reqstr.id, reqstr.mention, movie))
+            await bot.send_message(
+                chat_id=BIN_CHANNEL,
+                text=script.NORSLTS.format(req_user.id, req_user.mention, movie)
+            )
+
         contact_admin_button = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]])
-        k = await query.message.edit(script.MVE_NT_FND,reply_markup=contact_admin_button)
-        await asyncio.sleep(10)
-        await k.delete()
+            [[InlineKeyboardButton("🔔 Send Request to Admin 🔔", url=OWNER_LNK)]]
+        )
+        try:
+            k = await query.message.edit(script.MVE_NT_FND, reply_markup=contact_admin_button)
+            await asyncio.sleep(10)
+            await k.delete()
+        except Exception:
+            pass
+
 		
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):

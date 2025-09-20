@@ -467,250 +467,98 @@ async def handle_page_jump(bot, message):
     """
     user_id = message.from_user.id
     
-    if user_id in temp.PAGE_JUMP:
-        try:
-            page_num = int(message.text.strip())
-            jump_data = temp.PAGE_JUMP[user_id]
-            
-            # Get total pages to validate input
-            search = BUTTONS.get(jump_data['key']) or FRESH.get(jump_data['key'])
-            if not search:
-                await message.reply("❌ Search expired. Please start a new search.")
-                del temp.PAGE_JUMP[user_id]
-                return
-            
-            *, *, total = await get_search_results(jump_data['chat_id'], search, offset=0, filter=True)
-            settings = await get_settings(jump_data['chat_id'])
-            items_per_page = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
-            total_pages = math.ceil(total / items_per_page)
-            
-            if 1 <= page_num <= total_pages:
-                new_offset = (page_num - 1) * items_per_page
-                
-                # Option 1: Direct implementation - Generate and send new results
-                try:
-                    # Get the search results for the target page
-                    files, next_offset, total = await get_search_results(
-                        jump_data['chat_id'], 
-                        search, 
-                        offset=new_offset, 
-                        filter=True
-                    )
-                    
-                    # Generate the keyboard for the new page
-                    keyboard = await get_search_keyboard(
-                        files=files,
-                        offset=new_offset,
-                        total=total,
-                        key=jump_data['key'],
-                        req=jump_data['req'],
-                        chat_id=jump_data['chat_id']
-                    )
-                    
-                    # Send or edit the message with new results
-                    current_page = (new_offset // items_per_page) + 1
-                    caption = f"🔍 Search Results - Page {current_page}/{total_pages}\n📁 Total Files: {total}"
-                    
-                    # If you have the original message reference, edit it
-                    if 'message_id' in jump_data:
-                        await bot.edit_message_text(
-                            chat_id=user_id,
-                            message_id=jump_data['message_id'],
-                            text=caption,
-                            reply_markup=keyboard
-                        )
-                    else:
-                        # Or send a new message
-                        await message.reply(
-                            caption,
-                            reply_markup=keyboard
-                        )
-                    
-                    await message.reply(f"✅ Jumped to page {page_num}")
-                    
-                except Exception as e:
-                    LOGGER.error(f"Error generating page results: {e}")
-                    await message.reply("❌ Error occurred while loading page")
-                
-                # Clean up
-                del temp.PAGE_JUMP[user_id]
-                
-            else:
-                await message.reply(f"❌ Invalid page number. Please enter a number between 1 and {total_pages}")
-                
-        except ValueError:
-            await message.reply("❌ Please enter a valid page number")
-        except Exception as e:
-            await message.reply("❌ Error occurred while jumping to page")
-            LOGGER.error(f"Error in handle_page_jump: {e}")
-            if user_id in temp.PAGE_JUMP:
-                del temp.PAGE_JUMP[user_id]
-
-
-# Alternative Option 2: Create a reusable function for page navigation
-async def navigate_to_page(bot, chat_id, user_id, search_key, req, page_num, message_id=None):
-    """
-    Reusable function to navigate to a specific page
-    """
-    try:
-        search = BUTTONS.get(search_key) or FRESH.get(search_key)
-        if not search:
-            return False, "Search expired"
-        
-        settings = await get_settings(chat_id)
-        items_per_page = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
-        offset = (page_num - 1) * items_per_page
-        
-        # Get search results
-        files, next_offset, total = await get_search_results(
-            chat_id, search, offset=offset, filter=True
-        )
-        
-        # Generate keyboard
-        keyboard = await get_search_keyboard(
-            files=files,
-            offset=offset,
-            total=total,
-            key=search_key,
-            req=req,
-            chat_id=chat_id
-        )
-        
-        # Prepare caption
-        total_pages = math.ceil(total / items_per_page)
-        current_page = (offset // items_per_page) + 1
-        caption = f"🔍 Search Results - Page {current_page}/{total_pages}\n📁 Total Files: {total}"
-        
-        # Update message
-        if message_id:
-            await bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text=caption,
-                reply_markup=keyboard
-            )
-        else:
-            await bot.send_message(
-                chat_id=user_id,
-                text=caption,
-                reply_markup=keyboard
-            )
-        
-        return True, f"Successfully navigated to page {page_num}"
-        
-    except Exception as e:
-        LOGGER.error(f"Error in navigate_to_page: {e}")
-        return False, "Navigation error occurred"
-
-
-# Option 3: If you want to reuse existing next_page logic, extract the core functionality
-async def get_page_content(chat_id, search_key, req, offset):
-    """
-    Extract the core page generation logic that can be reused
-    """
-    search = BUTTONS.get(search_key) or FRESH.get(search_key)
-    if not search:
-        return None, "Search expired"
-    
-    try:
-        files, next_offset, total = await get_search_results(
-            chat_id, search, offset=offset, filter=True
-        )
-        
-        keyboard = await get_search_keyboard(
-            files=files,
-            offset=offset,
-            total=total,
-            key=search_key,
-            req=req,
-            chat_id=chat_id
-        )
-        
-        settings = await get_settings(chat_id)
-        items_per_page = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
-        total_pages = math.ceil(total / items_per_page)
-        current_page = (offset // items_per_page) + 1
-        
-        caption = f"🔍 Search Results - Page {current_page}/{total_pages}\n📁 Total Files: {total}"
-        
-        return {
-            'caption': caption,
-            'keyboard': keyboard,
-            'current_page': current_page,
-            'total_pages': total_pages
-        }, None
-        
-    except Exception as e:
-        LOGGER.error(f"Error in get_page_content: {e}")
-        return None, "Error loading page content"
-
-
-# Simplified version of handle_page_jump using the extracted function
-@Client.on_message(filters.text & filters.private)
-async def handle_page_jump_v2(bot, message):
-    """
-    Simplified page jump handler using extracted functionality
-    """
-    user_id = message.from_user.id
-    
     if user_id not in temp.PAGE_JUMP:
-        return
+        return  # Not in page jump mode, let other handlers process
     
     try:
         page_num = int(message.text.strip())
         jump_data = temp.PAGE_JUMP[user_id]
         
-        # Validate page number first
+        # Get total pages to validate input
         search = BUTTONS.get(jump_data['key']) or FRESH.get(jump_data['key'])
         if not search:
             await message.reply("❌ Search expired. Please start a new search.")
             del temp.PAGE_JUMP[user_id]
             return
         
-        *, *, total = await get_search_results(jump_data['chat_id'], search, offset=0, filter=True)
+        # Fixed: Properly unpack the tuple from get_search_results
+        try:
+            results, next_offset, total = await get_search_results(
+                jump_data['chat_id'], 
+                search, 
+                offset=0, 
+                filter=True
+            )
+        except Exception as e:
+            LOGGER.error(f"Error getting search results: {e}")
+            await message.reply("❌ Error retrieving search data.")
+            del temp.PAGE_JUMP[user_id]
+            return
+        
         settings = await get_settings(jump_data['chat_id'])
         items_per_page = 10 if settings.get('max_btn', True) else int(MAX_B_TN)
-        total_pages = math.ceil(total / items_per_page)
+        total_pages = math.ceil(total / items_per_page) if total > 0 else 1
         
-        if not (1 <= page_num <= total_pages):
-            await message.reply(f"❌ Invalid page number. Please enter a number between 1 and {total_pages}")
-            return
-        
-        # Calculate offset and get page content
-        new_offset = (page_num - 1) * items_per_page
-        page_content, error = await get_page_content(
-            jump_data['chat_id'], 
-            jump_data['key'], 
-            jump_data['req'], 
-            new_offset
-        )
-        
-        if error:
-            await message.reply(f"❌ {error}")
-            return
-        
-        # Update the message
-        if 'message_id' in jump_data:
-            await bot.edit_message_text(
-                chat_id=user_id,
-                message_id=jump_data['message_id'],
-                text=page_content['caption'],
-                reply_markup=page_content['keyboard']
-            )
+        if 1 <= page_num <= total_pages:
+            new_offset = (page_num - 1) * items_per_page
+            
+            # Option 1: If you have a direct way to show results
+            try:
+                # Get results for the target page
+                page_results, _, _ = await get_search_results(
+                    jump_data['chat_id'],
+                    search,
+                    offset=new_offset,
+                    filter=True
+                )
+                
+                # Generate buttons/keyboard for this page
+                btn = await get_buttons(page_results, jump_data['key'], new_offset)
+                
+                # Send the results
+                await message.reply(
+                    f"📄 Page {page_num} of {total_pages}\n"
+                    f"Found {total} results",
+                    reply_markup=btn
+                )
+                
+                # Clean up
+                del temp.PAGE_JUMP[user_id]
+                
+            except Exception as e:
+                LOGGER.error(f"Error displaying page results: {e}")
+                await message.reply("❌ Error displaying page results")
+                del temp.PAGE_JUMP[user_id]
+                
+            # Option 2: If you need to simulate callback query (alternative approach)
+            # from pyrogram.types import CallbackQuery
+            # 
+            # fake_callback_data = f"next_{jump_data['req']}_{jump_data['key']}_{new_offset}"
+            # 
+            # # Create mock callback query
+            # mock_query = CallbackQuery(
+            #     id="mock_jump",
+            #     from_user=message.from_user,
+            #     message=message,
+            #     data=fake_callback_data
+            # )
+            # 
+            # # Call your existing next_page handler
+            # await next_page(bot, mock_query)
+            # 
+            # del temp.PAGE_JUMP[user_id]
+            
         else:
             await message.reply(
-                page_content['caption'],
-                reply_markup=page_content['keyboard']
+                f"❌ Invalid page number. Please enter a number between 1 and {total_pages}"
             )
-        
-        await message.reply(f"✅ Jumped to page {page_num}")
-        
+            
     except ValueError:
         await message.reply("❌ Please enter a valid page number")
     except Exception as e:
-        await message.reply("❌ Error occurred while jumping to page")
         LOGGER.error(f"Error in handle_page_jump: {e}")
-    finally:
+        await message.reply("❌ An unexpected error occurred while jumping to page")
+        # Clean up on any error
         if user_id in temp.PAGE_JUMP:
             del temp.PAGE_JUMP[user_id]
 				

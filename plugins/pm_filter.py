@@ -34,7 +34,7 @@ BUTTON = {}
 BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
-
+FORCE_SUB_CHANNEL = "-1001271383721"
 # Season detection patterns
 SEASON_PATTERNS = [
     r'[Ss](?:eason)?[\s\-\.\_]*(\d+)',
@@ -1770,11 +1770,6 @@ async def auto_filter(client, msg, spoll=False):
 
 async def ai_spell_check(chat_id, wrong_name):
     async def search_movie(wrong_name):
-    # Check subscription
-    if not await is_subscribed(bot, query.from_user.id):
-        buttons = await get_subscription_buttons()
-        await query.answer("🚫 Please join our channels first!", show_alert=True)
-        return
         search_results = imdb.search_movie(wrong_name)
         movie_list = [movie['title'] for movie in search_results]
         return movie_list
@@ -1792,11 +1787,6 @@ async def ai_spell_check(chat_id, wrong_name):
         movie_list.remove(movie)
 
 async def advantage_spell_chok(client, message):
-    # Check subscription
-    if not await is_subscribed(bot, query.from_user.id):
-        buttons = await get_subscription_buttons()
-        await query.answer("🚫 Please join our channels first!", show_alert=True)
-        return
     mv_id = message.id
     search = message.text
     chat_id = message.chat.id

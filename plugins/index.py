@@ -4,7 +4,7 @@ import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.errors.exceptions.bad_request_400 import ChannelInvalid, ChatAdminRequired, UsernameInvalid, UsernameNotModified
-from info import ADMINS, INDEX_REQ_CHANNEL as LOG_CHANNEL
+from info import ADMINS, DATABASE_URI, DATABASE_NAME, INDEX_REQ_CHANNEL as LOG_CHANNEL
 from database.ia_filterdb import save_file
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp, get_readable_time
@@ -12,8 +12,14 @@ from math import ceil
 from logging_helper import LOGGER
 import json
 import os
+from motor.motor_asyncio import AsyncIOMotorClient
 
 lock = asyncio.Lock()
+
+# MongoDB setup
+mongodb_client = AsyncIOMotorClient(DATABASE_URI)
+mongodb = mongodb_client[DATABASE_NAME]
+auto_index_collection = mongodb['auto_index_config']
 
 # File extension filters
 SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
@@ -21,20 +27,41 @@ SUPPORTED_AUDIO_FORMATS = {'.mp3', '.flac', '.wav', '.aac', '.ogg', '.m4a', '.wm
 SUPPORTED_SUBTITLE_FORMATS = {'.srt', '.vtt', '.ass', '.ssa', '.sub', '.idx'}
 SUPPORTED_DOCUMENT_FORMATS = {'.pdf', '.txt', '.doc', '.docx', '.zip', '.rar', '.7z'}
 
-# Auto-indexing configuration file
-AUTO_INDEX_CONFIG_FILE = "auto_index_config.json"
+# Load auto-indexing configuration from database
+async def load_auto_index_config():
+    try:
+        config = {}
+        async for doc in auto_index_collection.find():
+            chat_id = str(doc['chat_id'])
+            config[chat_id] = {
+                'enabled': doc.get('enabled', False),
+                'chat_title': doc.get('chat_title', ''),
+                'filters': doc.get('filters', []),
+                'private_mode': doc.get('private_mode', False),
+                'last_indexed_msg': doc.get('last_indexed_msg', 0)
+            }
+        return config
+    except Exception as e:
+        LOGGER.error(f"Error loading auto-index config: {e}")
+        return {}
 
-# Load auto-indexing configuration
-def load_auto_index_config():
-    if os.path.exists(AUTO_INDEX_CONFIG_FILE):
-        with open(AUTO_INDEX_CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+# Save auto-indexing configuration to database
+async def save_auto_index_config(chat_id, settings):
+    try:
+        await auto_index_collection.update_one(
+            {'chat_id': int(chat_id)},
+            {'$set': settings},
+            upsert=True
+        )
+    except Exception as e:
+        LOGGER.error(f"Error saving auto-index config: {e}")
 
-# Save auto-indexing configuration
-def save_auto_index_config(config):
-    with open(AUTO_INDEX_CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+# Delete auto-indexing configuration from database
+async def delete_auto_index_config(chat_id):
+    try:
+        await auto_index_collection.delete_one({'chat_id': int(chat_id)})
+    except Exception as e:
+        LOGGER.error(f"Error deleting auto-index config: {e}")
 
 # Get file extension from filename
 def get_file_extension(filename):
@@ -184,17 +211,28 @@ async def clear_file_filters(bot, message):
 
 @Client.on_message(filters.command('autoindex') & filters.user(ADMINS))
 async def manage_auto_index(bot, message):
-    """Enable/disable auto-indexing for channels"""
+    """Enable/disable auto-indexing for channels with private mode support"""
     if len(message.command) < 2:
-        config = load_auto_index_config()
+        config = await load_auto_index_config()
         if not config:
-            return await message.reply("📋 No auto-indexing channels configured.\n\n💡 Usage:\n• Enable: `/autoindex enable @channel`\n• Disable: `/autoindex disable @channel`\n• List: `/autoindex list`")
+            return await message.reply(
+                "📋 No auto-indexing channels configured.\n\n"
+                "💡 Usage:\n"
+                "• Enable: `/autoindex enable @channel`\n"
+                "• Enable Private: `/autoindex enable @channel private`\n"
+                "• Disable: `/autoindex disable @channel`\n"
+                "• Set Filters: `/autoindex setfilters @channel .mp4,.mkv`\n"
+                "• Clear Filters: `/autoindex clearfilters @channel`\n"
+                "• List: `/autoindex list`"
+            )
         
         text = "🤖 Auto-indexing Status:\n\n"
         for chat_id, settings in config.items():
             status = "✅ Enabled" if settings.get('enabled', False) else "❌ Disabled"
+            mode = "🔒 Private" if settings.get('private_mode', False) else "🔓 Public"
             filters_info = f" | Filters: {', '.join(settings.get('filters', []))}" if settings.get('filters') else ""
-            text += f"• <code>{chat_id}</code>: {status}{filters_info}\n"
+            last_msg = settings.get('last_indexed_msg', 0)
+            text += f"• <code>{chat_id}</code>\n  {status} | {mode}{filters_info}\n  Last: <code>{last_msg}</code>\n\n"
         
         await message.reply(text)
         return
@@ -202,21 +240,31 @@ async def manage_auto_index(bot, message):
     command = message.command[1].lower()
     
     if command == "list":
-        config = load_auto_index_config()
+        config = await load_auto_index_config()
         if not config:
             return await message.reply("📋 No auto-indexing channels configured.")
         
         text = "🤖 Auto-indexing Channels:\n\n"
         for chat_id, settings in config.items():
             status = "✅ Enabled" if settings.get('enabled', False) else "❌ Disabled"
+            mode = "🔒 Private" if settings.get('private_mode', False) else "🔓 Public"
             filters_info = f" | Filters: {', '.join(settings.get('filters', []))}" if settings.get('filters') else ""
-            text += f"• <code>{chat_id}</code>: {status}{filters_info}\n"
+            last_msg = settings.get('last_indexed_msg', 0)
+            text += f"• <code>{chat_id}</code>\n  {status} | {mode}{filters_info}\n  Last: <code>{last_msg}</code>\n\n"
         
         await message.reply(text)
         return
     
     if len(message.command) < 3:
-        return await message.reply("💡 Usage:\n• Enable: `/autoindex enable @channel`\n• Disable: `/autoindex disable @channel`\n• List: `/autoindex list`")
+        return await message.reply(
+            "💡 Usage:\n"
+            "• Enable: `/autoindex enable @channel`\n"
+            "• Enable Private: `/autoindex enable @channel private`\n"
+            "• Disable: `/autoindex disable @channel`\n"
+            "• Set Filters: `/autoindex setfilters @channel .mp4,.mkv`\n"
+            "• Clear Filters: `/autoindex clearfilters @channel`\n"
+            "• List: `/autoindex list`"
+        )
     
     chat_identifier = message.command[2]
     
@@ -226,32 +274,81 @@ async def manage_auto_index(bot, message):
     except Exception as e:
         return await message.reply(f"❌ Error getting chat info: {e}")
     
-    config = load_auto_index_config()
+    config = await load_auto_index_config()
     
     if command == "enable":
-        if chat_id not in config:
-            config[chat_id] = {}
-        config[chat_id]['enabled'] = True
-        config[chat_id]['chat_title'] = chat.title or chat.username
-        save_auto_index_config(config)
-        await message.reply(f"✅ Auto-indexing enabled for {chat.title or chat.username} (<code>{chat_id}</code>)")
+        private_mode = len(message.command) > 3 and message.command[3].lower() == "private"
+        
+        settings = {
+            'chat_id': int(chat_id),
+            'enabled': True,
+            'chat_title': chat.title or chat.username,
+            'private_mode': private_mode,
+            'filters': config.get(chat_id, {}).get('filters', []),
+            'last_indexed_msg': config.get(chat_id, {}).get('last_indexed_msg', 0)
+        }
+        
+        await save_auto_index_config(chat_id, settings)
+        mode_text = "🔒 Private Mode" if private_mode else "🔓 Public Mode"
+        await message.reply(
+            f"✅ Auto-indexing enabled for {chat.title or chat.username} (<code>{chat_id}</code>)\n"
+            f"Mode: {mode_text}\n\n"
+            f"{'⚠️ Note: Private mode will index new messages only, not historical messages.' if private_mode else ''}"
+        )
         
     elif command == "disable":
         if chat_id in config:
-            config[chat_id]['enabled'] = False
-            save_auto_index_config(config)
-            await message.reply(f"❌ Auto-indexing disabled for {chat.title or chat.username} (<code>{chat_id}</code>)")
+            await delete_auto_index_config(chat_id)
+            await message.reply(f"❌ Auto-indexing disabled and removed for {chat.title or chat.username} (<code>{chat_id}</code>)")
         else:
             await message.reply("❌ This channel is not in auto-index list.")
+    
+    elif command == "setfilters":
+        if len(message.command) < 4:
+            return await message.reply("💡 Usage: `/autoindex setfilters @channel .mp4,.mkv,.srt`")
+        
+        filter_text = message.command[3]
+        extensions = [ext.strip().lower() for ext in filter_text.split(',')]
+        extensions = [ext if ext.startswith('.') else f'.{ext}' for ext in extensions]
+        
+        if chat_id not in config:
+            return await message.reply("❌ This channel is not in auto-index list. Enable it first.")
+        
+        settings = config[chat_id]
+        settings['filters'] = extensions
+        settings['chat_id'] = int(chat_id)
+        await save_auto_index_config(chat_id, settings)
+        
+        await message.reply(f"✅ Filters set for {chat.title or chat.username}: {', '.join(extensions)}")
+    
+    elif command == "clearfilters":
+        if chat_id not in config:
+            return await message.reply("❌ This channel is not in auto-index list.")
+        
+        settings = config[chat_id]
+        settings['filters'] = []
+        settings['chat_id'] = int(chat_id)
+        await save_auto_index_config(chat_id, settings)
+        
+        await message.reply(f"✅ Filters cleared for {chat.title or chat.username}")
+    
     else:
-        await message.reply("💡 Usage:\n• Enable: `/autoindex enable @channel`\n• Disable: `/autoindex disable @channel`\n• List: `/autoindex list`")
+        await message.reply(
+            "💡 Usage:\n"
+            "• Enable: `/autoindex enable @channel`\n"
+            "• Enable Private: `/autoindex enable @channel private`\n"
+            "• Disable: `/autoindex disable @channel`\n"
+            "• Set Filters: `/autoindex setfilters @channel .mp4,.mkv`\n"
+            "• Clear Filters: `/autoindex clearfilters @channel`\n"
+            "• List: `/autoindex list`"
+        )
 
 # Auto-indexing handler for new messages in monitored channels
 @Client.on_message(filters.channel & ~filters.service)
 async def auto_index_new_files(bot, message):
     """Automatically index new files from monitored channels"""
     try:
-        config = load_auto_index_config()
+        config = await load_auto_index_config()
         chat_id = str(message.chat.id)
         
         if chat_id not in config or not config[chat_id].get('enabled', False):
@@ -285,15 +382,24 @@ async def auto_index_new_files(bot, message):
             ok, code = await save_file(media)
             if ok:
                 LOGGER.info(f"Auto-indexed file: {getattr(media, 'file_name', 'Unknown')} from {message.chat.title}")
+                
+                # Update last indexed message ID
+                settings = config[chat_id]
+                settings['last_indexed_msg'] = message.id
+                settings['chat_id'] = int(chat_id)
+                await save_auto_index_config(chat_id, settings)
+                
                 # Optional: Send notification to log channel
                 if LOG_CHANNEL:
                     try:
+                        mode_icon = "🔒" if config[chat_id].get('private_mode', False) else "🔓"
                         await bot.send_message(
                             LOG_CHANNEL,
                             f"🤖 Auto-indexed file:\n"
                             f"📁 File: <code>{getattr(media, 'file_name', 'Unknown')}</code>\n"
                             f"📺 Channel: {message.chat.title} (<code>{chat_id}</code>)\n"
-                            f"🆔 Message ID: <code>{message.id}</code>"
+                            f"🆔 Message ID: <code>{message.id}</code>\n"
+                            f"Mode: {mode_icon}"
                         )
                     except:
                         pass
@@ -317,7 +423,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     deleted = 0
     no_media = 0
     unsupported = 0
-    filtered_out = 0  # New counter for filtered files
+    filtered_out = 0
     BATCH_SIZE = 200
     start_time = time.time()
 

@@ -34,15 +34,6 @@ BUTTON = {}
 BUTTONS = {}
 FRESH = {}
 SPELL_CHECK = {}
-EPISODE_PATTERNS = [
-    r'[Ee](?:pisode)?[\s\-\.\_]*(\d+)',
-    r'[Ss]\d+[Ee](\d+)',
-    r'[\s\-\.\_](\d+)[\s\-\.\_]*[Oo][Ff][\s\-\.\_]*\d+',
-    r'[\s\-\.\_](\d{1,3})[\s\-\.\_]*(?:mkv|mp4|avi|mov)',
-    r'[\[\(](\d+)[\]\)]',
-    r'Part[\s\-\.\_]*(\d+)',
-    r'Chapter[\s\-\.\_]*(\d+)'
-]
 
 # Season detection patterns
 SEASON_PATTERNS = [
@@ -189,23 +180,23 @@ async def next_page(bot, query):
             # Add filter buttons
             btn.insert(0, [
                     InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                    InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0"),
-				    InlineKeyboardButton("📺 Episodes", callback_data=f"episodes#{key}#0")
+                    InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
             ])
             # Add send all button
             btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
+                InlineKeyboardButton("📥 Bulk Links", callback_data=f"bulk_links#{key}")
             ])
         else:
             btn = []
             # Add filter buttons even when file buttons are disabled
             btn.insert(0, [
                     InlineKeyboardButton("⭐ Quality", callback_data=f"qualities#{key}#0"),
-                    InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0"),
-				    InlineKeyboardButton("📺 Episodes", callback_data=f"episodes#{key}#0")
+                    InlineKeyboardButton("🗓️ Season",  callback_data=f"seasons#{key}#0")
             ])
             btn.insert(1, [
-                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}")
+                InlineKeyboardButton("🚀 Send All Files", callback_data=f"sendfiles#{key}"),
+                InlineKeyboardButton("📥 Bulk Links", callback_data=f"bulk_links#{key}")
             ])
         
         # Enhanced Navigation Buttons Logic
@@ -506,7 +497,16 @@ async def handle_page_jump(bot, message):
             LOGGER.error(f"Error in handle_page_jump: {e}")
             if user_id in temp.PAGE_JUMP:
                 del temp.PAGE_JUMP[user_id]
-
+				
+@Client.on_callback_query(filters.regex("^check_subscription$"))
+async def generate_bulk_download_links(files, message_chat_id):
+    """Generate bulk download links for files"""
+    links = []
+    for idx, file in enumerate(files, 1):
+        file_link = f"https://telegram.me/{temp.U_NAME}?start=file_{message_chat_id}_{file.file_id}"
+        links.append(f"{idx}. [{clean_filename(file.file_name)}]({file_link})")
+    return "\n".join(links)
+	
 @Client.on_callback_query(filters.regex(r"^bulk_links"))
 async def bulk_links_handler(client, query):
     """Send bulk download links to user"""

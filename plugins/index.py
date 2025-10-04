@@ -1,8 +1,9 @@
 import time
 import re
 import asyncio
+import threading
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
 from pyrogram.errors.exceptions.bad_request_400 import ChannelInvalid, ChatAdminRequired, UsernameInvalid, UsernameNotModified
 from info import ADMINS, DATABASE_URI, DATABASE_NAME, INDEX_REQ_CHANNEL as LOG_CHANNEL
 from database.ia_filterdb import save_file
@@ -79,6 +80,158 @@ def should_index_file(media, file_filters):
     
     return extension in file_filters
 
+# Progress writer for downloads/uploads
+def progress(current, total, message, type):
+    with open(f'{message.id}{type}status.txt',"w") as fileup:
+        fileup.write(f"{current * 100 / total:.1f}%")
+
+# Download status
+def downstatus(statusfile, message, bot):
+    while True:
+        if os.path.exists(statusfile):
+            break
+    time.sleep(3)      
+    while os.path.exists(statusfile):
+        with open(statusfile,"r") as downread:
+            txt = downread.read()
+        try:
+            bot.edit_message_text(message.chat.id, message.id, f"__Downloaded__ : **{txt}**")
+            time.sleep(10)
+        except:
+            time.sleep(5)
+
+# Upload status
+def upstatus(statusfile, message, bot):
+    while True:
+        if os.path.exists(statusfile):
+            break
+    time.sleep(3)      
+    while os.path.exists(statusfile):
+        with open(statusfile,"r") as upread:
+            txt = upread.read()
+        try:
+            bot.edit_message_text(message.chat.id, message.id, f"𝐔𝐩𝐥𝐨𝐚𝐝𝐞𝐝 : **{txt}**")
+            time.sleep(10)
+        except:
+            time.sleep(5)
+
+# Get message type
+def get_message_type(msg):
+    try:
+        msg.document.file_id
+        return "Document"
+    except: pass
+    try:
+        msg.video.file_id
+        return "Video"
+    except: pass
+    try:
+        msg.animation.file_id
+        return "Animation"
+    except: pass
+    try:
+        msg.sticker.file_id
+        return "Sticker"
+    except: pass
+    try:
+        msg.voice.file_id
+        return "Voice"
+    except: pass
+    try:
+        msg.audio.file_id
+        return "Audio"
+    except: pass
+    try:
+        msg.photo.file_id
+        return "Photo"
+    except: pass
+    try:
+        msg.text
+        return "Text"
+    except: pass
+
+# Handle private/restricted content
+async def handle_private_content(bot, message, chatid, msgid, user_client):
+    """Handle downloading and forwarding restricted content"""
+    try:
+        msg = await user_client.get_messages(chatid, msgid)
+        msg_type = get_message_type(msg)
+
+        if "Text" == msg_type:
+            await bot.send_message(message.chat.id, msg.text, entities=msg.entities, reply_to_message_id=message.id)
+            return
+
+        smsg = await bot.send_message(message.chat.id, '𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝𝐢𝐧𝐠...', reply_to_message_id=message.id)
+        
+        # Start download status thread
+        dosta = threading.Thread(target=lambda: downstatus(f'{message.id}downstatus.txt', smsg, bot), daemon=True)
+        dosta.start()
+        
+        file = await user_client.download_media(msg, progress=progress, progress_args=[message, "down"])
+        
+        if os.path.exists(f'{message.id}downstatus.txt'):
+            os.remove(f'{message.id}downstatus.txt')
+
+        # Start upload status thread
+        upsta = threading.Thread(target=lambda: upstatus(f'{message.id}upstatus.txt', smsg, bot), daemon=True)
+        upsta.start()
+        
+        thumb = None
+        
+        if "Document" == msg_type:
+            try:
+                thumb = await user_client.download_media(msg.document.thumbs[0].file_id)
+            except: pass
+            await bot.send_document(message.chat.id, file, thumb=thumb, caption=msg.caption, 
+                                  caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
+                                  progress=progress, progress_args=[message, "up"])
+        
+        elif "Video" == msg_type:
+            try: 
+                thumb = await user_client.download_media(msg.video.thumbs[0].file_id)
+            except: pass
+            await bot.send_video(message.chat.id, file, duration=msg.video.duration, width=msg.video.width, 
+                               height=msg.video.height, thumb=thumb, caption=msg.caption, 
+                               caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
+                               progress=progress, progress_args=[message, "up"])
+        
+        elif "Animation" == msg_type:
+            await bot.send_animation(message.chat.id, file, reply_to_message_id=message.id)
+        
+        elif "Sticker" == msg_type:
+            await bot.send_sticker(message.chat.id, file, reply_to_message_id=message.id)
+        
+        elif "Voice" == msg_type:
+            await bot.send_voice(message.chat.id, file, caption=msg.caption, 
+                               caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
+                               progress=progress, progress_args=[message, "up"])
+        
+        elif "Audio" == msg_type:
+            try:
+                thumb = await user_client.download_media(msg.audio.thumbs[0].file_id)
+            except: pass
+            await bot.send_audio(message.chat.id, file, caption=msg.caption, 
+                               caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
+                               progress=progress, progress_args=[message, "up"])
+        
+        elif "Photo" == msg_type:
+            await bot.send_photo(message.chat.id, file, caption=msg.caption, 
+                               caption_entities=msg.caption_entities, reply_to_message_id=message.id)
+        
+        # Cleanup
+        if thumb and os.path.exists(thumb):
+            os.remove(thumb)
+        if os.path.exists(file):
+            os.remove(file)
+        if os.path.exists(f'{message.id}upstatus.txt'):
+            os.remove(f'{message.id}upstatus.txt')
+        
+        await bot.delete_messages(message.chat.id, [smsg.id])
+        
+    except Exception as e:
+        LOGGER.error(f"Error handling private content: {e}")
+        await bot.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id)
+
 @Client.on_callback_query(filters.regex(r'^index'))
 async def index_files(bot, query):
     if query.data.startswith('index_cancel'):
@@ -115,20 +268,40 @@ async def index_files(bot, query):
 
 @Client.on_message((filters.forwarded | (filters.regex(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")) & filters.text ) & filters.private & filters.incoming)
 async def send_for_index(bot, message):
+    # Check if it's a join link
+    if "https://t.me/+" in message.text or "https://t.me/joinchat/" in message.text:
+        # Handle join chat functionality
+        user_client = getattr(temp, 'USER_CLIENT', None)
+        if user_client is None:
+            return await message.reply('String Session is not set. Cannot join private chats.')
+        
+        try:
+            await user_client.join_chat(message.text)
+            await message.reply("Chat Joined ✅")
+        except UserAlreadyParticipant:
+            await message.reply("Chat already Joined 😏")
+        except InviteHashExpired:
+            await message.reply("Invalid Link 😒")
+        except Exception as e:
+            await message.reply(f"Error: {e}")
+        return
+    
+    # Handle indexing requests
     if message.text:
         regex = re.compile(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")
-        match = regex.match(message.text)
+        match = regex.match(message.text.split()[0])  # Get first URL
         if not match:
             return await message.reply('Invalid link')
         chat_id = match.group(4)
         last_msg_id = int(match.group(5))
         if chat_id.isnumeric():
-            chat_id  = int(("-100" + chat_id))
+            chat_id = int(("-100" + chat_id))
     elif message.forward_from_chat and message.forward_from_chat.type == enums.ChatType.CHANNEL:
         last_msg_id = message.forward_from_message_id
         chat_id = message.forward_from_chat.username or message.forward_from_chat.id
     else:
         return
+    
     try:
         await bot.get_chat(chat_id)
     except ChannelInvalid:
@@ -138,10 +311,12 @@ async def send_for_index(bot, message):
     except Exception as e:
         LOGGER.error(e)
         return await message.reply(f'Errors - {e}')
+    
     try:
         k = await bot.get_messages(chat_id, last_msg_id)
     except:
-        return await message.reply('Make Sure That Iam An Admin In The Channel, if channel is private')
+        return await message.reply('Make Sure That I am An Admin In The Channel, if channel is private')
+    
     if k.empty:
         return await message.reply('This may be group and i am not a admin of the group.')
 
@@ -162,6 +337,7 @@ async def send_for_index(bot, message):
             return await message.reply('Make sure I am an admin in the chat and have permission to invite users.')
     else:
         link = f"@{message.forward_from_chat.username}"
+    
     buttons = [
         [InlineKeyboardButton('Accept Index', callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')],
         [InlineKeyboardButton('Reject Index', callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}')]
@@ -191,7 +367,6 @@ async def set_file_filters(bot, message):
     if ' ' in message.text:
         _, filter_text = message.text.split(" ", 1)
         extensions = [ext.strip().lower() for ext in filter_text.split(',')]
-        # Add dots if missing
         extensions = [ext if ext.startswith('.') else f'.{ext}' for ext in extensions]
         
         temp.FILE_FILTERS = set(extensions)
@@ -354,7 +529,6 @@ async def auto_index_new_files(bot, message):
         if chat_id not in config or not config[chat_id].get('enabled', False):
             return
         
-        # Check if message has media
         if not message.media:
             return
         
@@ -365,7 +539,6 @@ async def auto_index_new_files(bot, message):
         if not media:
             return
         
-        # Apply file filters if set
         channel_filters = set(config[chat_id].get('filters', []))
         global_filters = getattr(temp, 'FILE_FILTERS', set())
         file_filters = channel_filters or global_filters
@@ -373,23 +546,19 @@ async def auto_index_new_files(bot, message):
         if file_filters and not should_index_file(media, file_filters):
             return
         
-        # Set media properties for saving
         media.file_type = message.media.value
         media.caption = message.caption
         
-        # Save the file
         try:
             ok, code = await save_file(media)
             if ok:
                 LOGGER.info(f"Auto-indexed file: {getattr(media, 'file_name', 'Unknown')} from {message.chat.title}")
                 
-                # Update last indexed message ID
                 settings = config[chat_id]
                 settings['last_indexed_msg'] = message.id
                 settings['chat_id'] = int(chat_id)
                 await save_auto_index_config(chat_id, settings)
                 
-                # Optional: Send notification to log channel
                 if LOG_CHANNEL:
                     try:
                         mode_icon = "🔒" if config[chat_id].get('private_mode', False) else "🔓"
@@ -427,7 +596,6 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     BATCH_SIZE = 200
     start_time = time.time()
 
-    # Get current file filters
     file_filters = getattr(temp, 'FILE_FILTERS', set())
 
     async with lock:

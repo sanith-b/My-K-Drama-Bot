@@ -26,6 +26,20 @@ import os
 import signal
 from logging_helper import LOGGER
 
+# ============================================
+# NEW: Import API if enabled
+# ============================================
+try:
+    if ENABLE_API:
+        from api import run_api
+        LOGGER.info("📡 API Module Loaded Successfully")
+except ImportError:
+    ENABLE_API = False
+    LOGGER.warning("⚠️ API module not found. API will be disabled.")
+except Exception as e:
+    ENABLE_API = False
+    LOGGER.error(f"❌ Error loading API module: {e}")
+
 botStartTime = time.time()
 ppath = "plugins/*.py"
 files = glob.glob(ppath)
@@ -60,6 +74,15 @@ threading.Thread(target=ping_loop, daemon=True).start()
 
 # Start the auto-restart scheduler in a daemon thread
 threading.Thread(target=schedule_restart, daemon=True).start()
+
+# ============================================
+# NEW: Start API Server in background thread
+# ============================================
+if ENABLE_API:
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+    LOGGER.info(f"🚀 API Server Started on http://0.0.0.0:{API_PORT}")
+    LOGGER.info(f"📖 API Docs: http://0.0.0.0:{API_PORT}/")
 
 async def SilentXBotz_start():
     """Main bot startup function"""
@@ -127,20 +150,34 @@ async def SilentXBotz_start():
     next_restart = datetime.now(tz) + timedelta(hours=3)
     next_restart_str = next_restart.strftime("%H:%M:%S %p")
     
+    # ============================================
+    # NEW: Enhanced restart message with API info
+    # ============================================
+    restart_message = script.RESTART_TXT.format(temp.B_LINK, today, current_time)
+    restart_message += f"\n\n⏰ <b>Next Auto-Restart:</b> {next_restart_str}"
+    
+    if ENABLE_API:
+        restart_message += f"\n\n🌐 <b>API Status:</b> ✅ Running"
+        restart_message += f"\n📡 <b>API Port:</b> {API_PORT}"
+        restart_message += f"\n🔗 <b>API Endpoint:</b> <code>http://0.0.0.0:{API_PORT}</code>"
+    else:
+        restart_message += f"\n\n🌐 <b>API Status:</b> ❌ Disabled"
+    
     await SilentX.send_message(
         chat_id=LOG_CHANNEL, 
-        text=script.RESTART_TXT.format(temp.B_LINK, today, current_time) + 
-             f"\n\n⏰ <b>Next Auto-Restart:</b> {next_restart_str}"
+        text=restart_message
     )
     
     # Notify admins with restart info
     try:
         for admin in ADMINS:
-            await SilentX.send_message(
-                chat_id=admin, 
-                text=f"<b>๏[-ิ_•ิ]๏ {me.mention} Restarted ✅</b>\n"
-                     f"⏰ <b>Next Auto-Restart:</b> {next_restart_str}"
-            )
+            admin_message = f"<b>๏[-ิ_•ิ]๏ {me.mention} Restarted ✅</b>\n"
+            admin_message += f"⏰ <b>Next Auto-Restart:</b> {next_restart_str}"
+            
+            if ENABLE_API:
+                admin_message += f"\n🌐 <b>API:</b> ✅ Online (Port {API_PORT})"
+            
+            await SilentX.send_message(chat_id=admin, text=admin_message)
     except Exception as e:
         LOGGER.error(f"Failed to notify admins: {e}")
     
@@ -149,6 +186,15 @@ async def SilentXBotz_start():
     await app.setup()
     bind_address = "0.0.0.0"
     await web.TCPSite(app, bind_address, PORT).start()
+    
+    LOGGER.info("=" * 50)
+    LOGGER.info("✅ Bot Started Successfully!")
+    LOGGER.info(f"🤖 Bot: @{me.username}")
+    LOGGER.info(f"🌐 Web Server: http://0.0.0.0:{PORT}")
+    if ENABLE_API:
+        LOGGER.info(f"📡 API Server: http://0.0.0.0:{API_PORT}")
+        LOGGER.info(f"📖 API Docs: http://0.0.0.0:{API_PORT}/")
+    LOGGER.info("=" * 50)
     
     # Keep the bot running
     await idle()

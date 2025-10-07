@@ -221,3 +221,8 @@ VOICE_SEARCH_ENABLED = True
 ENHANCED_SEARCH_SUGGESTIONS = True
 PERSONALIZED_RESULTS = True
 SEARCH_ANALYTICS = True
+
+API_SECRET_KEY = os.environ.get('API_SECRET_KEY', '8f4e7d3c6b9a2e1f5g8h4j7k3m9n2p5q8r7t4v6w9x2y5z')
+API_ACCESS_KEY = os.environ.get('API_ACCESS_KEY', 'xK9mP2vN8qR5wT7yU4iO1pL3jH6fG9dS2aZ5cV8bN4m')
+API_PORT = int(os.environ.get('API_PORT', 5000))
+ENABLE_API = os.environ.get('ENABLE_API', 'True').lower() in ('true', '1', 'yes')

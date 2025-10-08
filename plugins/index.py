@@ -1,11 +1,10 @@
 import time
 import re
 import asyncio
-import threading
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
+from pyrogram.errors import FloodWait
 from pyrogram.errors.exceptions.bad_request_400 import ChannelInvalid, ChatAdminRequired, UsernameInvalid, UsernameNotModified
-from info import ADMINS, DATABASE_URI, DATABASE_NAME, INDEX_REQ_CHANNEL as LOG_CHANNEL
+from info import ADMINS, INDEX_REQ_CHANNEL as LOG_CHANNEL
 from database.ia_filterdb import save_file
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp, get_readable_time
@@ -13,14 +12,8 @@ from math import ceil
 from logging_helper import LOGGER
 import json
 import os
-from motor.motor_asyncio import AsyncIOMotorClient
 
 lock = asyncio.Lock()
-
-# MongoDB setup
-mongodb_client = AsyncIOMotorClient(DATABASE_URI)
-mongodb = mongodb_client[DATABASE_NAME]
-auto_index_collection = mongodb['auto_index_config']
 
 # File extension filters
 SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
@@ -28,41 +21,20 @@ SUPPORTED_AUDIO_FORMATS = {'.mp3', '.flac', '.wav', '.aac', '.ogg', '.m4a', '.wm
 SUPPORTED_SUBTITLE_FORMATS = {'.srt', '.vtt', '.ass', '.ssa', '.sub', '.idx'}
 SUPPORTED_DOCUMENT_FORMATS = {'.pdf', '.txt', '.doc', '.docx', '.zip', '.rar', '.7z'}
 
-# Load auto-indexing configuration from database
-async def load_auto_index_config():
-    try:
-        config = {}
-        async for doc in auto_index_collection.find():
-            chat_id = str(doc['chat_id'])
-            config[chat_id] = {
-                'enabled': doc.get('enabled', False),
-                'chat_title': doc.get('chat_title', ''),
-                'filters': doc.get('filters', []),
-                'private_mode': doc.get('private_mode', False),
-                'last_indexed_msg': doc.get('last_indexed_msg', 0)
-            }
-        return config
-    except Exception as e:
-        LOGGER.error(f"Error loading auto-index config: {e}")
-        return {}
+# Auto-indexing configuration file
+AUTO_INDEX_CONFIG_FILE = "auto_index_config.json"
 
-# Save auto-indexing configuration to database
-async def save_auto_index_config(chat_id, settings):
-    try:
-        await auto_index_collection.update_one(
-            {'chat_id': int(chat_id)},
-            {'$set': settings},
-            upsert=True
-        )
-    except Exception as e:
-        LOGGER.error(f"Error saving auto-index config: {e}")
+# Load auto-indexing configuration
+def load_auto_index_config():
+    if os.path.exists(AUTO_INDEX_CONFIG_FILE):
+        with open(AUTO_INDEX_CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-# Delete auto-indexing configuration from database
-async def delete_auto_index_config(chat_id):
-    try:
-        await auto_index_collection.delete_one({'chat_id': int(chat_id)})
-    except Exception as e:
-        LOGGER.error(f"Error deleting auto-index config: {e}")
+# Save auto-indexing configuration
+def save_auto_index_config(config):
+    with open(AUTO_INDEX_CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
 
 # Get file extension from filename
 def get_file_extension(filename):
@@ -79,158 +51,6 @@ def should_index_file(media, file_filters):
     extension = get_file_extension(filename)
     
     return extension in file_filters
-
-# Progress writer for downloads/uploads
-def progress(current, total, message, type):
-    with open(f'{message.id}{type}status.txt',"w") as fileup:
-        fileup.write(f"{current * 100 / total:.1f}%")
-
-# Download status
-def downstatus(statusfile, message, bot):
-    while True:
-        if os.path.exists(statusfile):
-            break
-    time.sleep(3)      
-    while os.path.exists(statusfile):
-        with open(statusfile,"r") as downread:
-            txt = downread.read()
-        try:
-            bot.edit_message_text(message.chat.id, message.id, f"__Downloaded__ : **{txt}**")
-            time.sleep(10)
-        except:
-            time.sleep(5)
-
-# Upload status
-def upstatus(statusfile, message, bot):
-    while True:
-        if os.path.exists(statusfile):
-            break
-    time.sleep(3)      
-    while os.path.exists(statusfile):
-        with open(statusfile,"r") as upread:
-            txt = upread.read()
-        try:
-            bot.edit_message_text(message.chat.id, message.id, f"𝐔𝐩𝐥𝐨𝐚𝐝𝐞𝐝 : **{txt}**")
-            time.sleep(10)
-        except:
-            time.sleep(5)
-
-# Get message type
-def get_message_type(msg):
-    try:
-        msg.document.file_id
-        return "Document"
-    except: pass
-    try:
-        msg.video.file_id
-        return "Video"
-    except: pass
-    try:
-        msg.animation.file_id
-        return "Animation"
-    except: pass
-    try:
-        msg.sticker.file_id
-        return "Sticker"
-    except: pass
-    try:
-        msg.voice.file_id
-        return "Voice"
-    except: pass
-    try:
-        msg.audio.file_id
-        return "Audio"
-    except: pass
-    try:
-        msg.photo.file_id
-        return "Photo"
-    except: pass
-    try:
-        msg.text
-        return "Text"
-    except: pass
-
-# Handle private/restricted content
-async def handle_private_content(bot, message, chatid, msgid, user_client):
-    """Handle downloading and forwarding restricted content"""
-    try:
-        msg = await user_client.get_messages(chatid, msgid)
-        msg_type = get_message_type(msg)
-
-        if "Text" == msg_type:
-            await bot.send_message(message.chat.id, msg.text, entities=msg.entities, reply_to_message_id=message.id)
-            return
-
-        smsg = await bot.send_message(message.chat.id, '𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝𝐢𝐧𝐠...', reply_to_message_id=message.id)
-        
-        # Start download status thread
-        dosta = threading.Thread(target=lambda: downstatus(f'{message.id}downstatus.txt', smsg, bot), daemon=True)
-        dosta.start()
-        
-        file = await user_client.download_media(msg, progress=progress, progress_args=[message, "down"])
-        
-        if os.path.exists(f'{message.id}downstatus.txt'):
-            os.remove(f'{message.id}downstatus.txt')
-
-        # Start upload status thread
-        upsta = threading.Thread(target=lambda: upstatus(f'{message.id}upstatus.txt', smsg, bot), daemon=True)
-        upsta.start()
-        
-        thumb = None
-        
-        if "Document" == msg_type:
-            try:
-                thumb = await user_client.download_media(msg.document.thumbs[0].file_id)
-            except: pass
-            await bot.send_document(message.chat.id, file, thumb=thumb, caption=msg.caption, 
-                                  caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
-                                  progress=progress, progress_args=[message, "up"])
-        
-        elif "Video" == msg_type:
-            try: 
-                thumb = await user_client.download_media(msg.video.thumbs[0].file_id)
-            except: pass
-            await bot.send_video(message.chat.id, file, duration=msg.video.duration, width=msg.video.width, 
-                               height=msg.video.height, thumb=thumb, caption=msg.caption, 
-                               caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
-                               progress=progress, progress_args=[message, "up"])
-        
-        elif "Animation" == msg_type:
-            await bot.send_animation(message.chat.id, file, reply_to_message_id=message.id)
-        
-        elif "Sticker" == msg_type:
-            await bot.send_sticker(message.chat.id, file, reply_to_message_id=message.id)
-        
-        elif "Voice" == msg_type:
-            await bot.send_voice(message.chat.id, file, caption=msg.caption, 
-                               caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
-                               progress=progress, progress_args=[message, "up"])
-        
-        elif "Audio" == msg_type:
-            try:
-                thumb = await user_client.download_media(msg.audio.thumbs[0].file_id)
-            except: pass
-            await bot.send_audio(message.chat.id, file, caption=msg.caption, 
-                               caption_entities=msg.caption_entities, reply_to_message_id=message.id, 
-                               progress=progress, progress_args=[message, "up"])
-        
-        elif "Photo" == msg_type:
-            await bot.send_photo(message.chat.id, file, caption=msg.caption, 
-                               caption_entities=msg.caption_entities, reply_to_message_id=message.id)
-        
-        # Cleanup
-        if thumb and os.path.exists(thumb):
-            os.remove(thumb)
-        if os.path.exists(file):
-            os.remove(file)
-        if os.path.exists(f'{message.id}upstatus.txt'):
-            os.remove(f'{message.id}upstatus.txt')
-        
-        await bot.delete_messages(message.chat.id, [smsg.id])
-        
-    except Exception as e:
-        LOGGER.error(f"Error handling private content: {e}")
-        await bot.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id)
 
 @Client.on_callback_query(filters.regex(r'^index'))
 async def index_files(bot, query):
@@ -268,40 +88,20 @@ async def index_files(bot, query):
 
 @Client.on_message((filters.forwarded | (filters.regex(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")) & filters.text ) & filters.private & filters.incoming)
 async def send_for_index(bot, message):
-    # Check if it's a join link
-    if "https://t.me/+" in message.text or "https://t.me/joinchat/" in message.text:
-        # Handle join chat functionality
-        user_client = getattr(temp, 'USER_CLIENT', None)
-        if user_client is None:
-            return await message.reply('String Session is not set. Cannot join private chats.')
-        
-        try:
-            await user_client.join_chat(message.text)
-            await message.reply("Chat Joined ✅")
-        except UserAlreadyParticipant:
-            await message.reply("Chat already Joined 😏")
-        except InviteHashExpired:
-            await message.reply("Invalid Link 😒")
-        except Exception as e:
-            await message.reply(f"Error: {e}")
-        return
-    
-    # Handle indexing requests
     if message.text:
         regex = re.compile(r"(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")
-        match = regex.match(message.text.split()[0])  # Get first URL
+        match = regex.match(message.text)
         if not match:
             return await message.reply('Invalid link')
         chat_id = match.group(4)
         last_msg_id = int(match.group(5))
         if chat_id.isnumeric():
-            chat_id = int(("-100" + chat_id))
+            chat_id  = int(("-100" + chat_id))
     elif message.forward_from_chat and message.forward_from_chat.type == enums.ChatType.CHANNEL:
         last_msg_id = message.forward_from_message_id
         chat_id = message.forward_from_chat.username or message.forward_from_chat.id
     else:
         return
-    
     try:
         await bot.get_chat(chat_id)
     except ChannelInvalid:
@@ -311,12 +111,10 @@ async def send_for_index(bot, message):
     except Exception as e:
         LOGGER.error(e)
         return await message.reply(f'Errors - {e}')
-    
     try:
         k = await bot.get_messages(chat_id, last_msg_id)
     except:
-        return await message.reply('Make Sure That I am An Admin In The Channel, if channel is private')
-    
+        return await message.reply('Make Sure That Iam An Admin In The Channel, if channel is private')
     if k.empty:
         return await message.reply('This may be group and i am not a admin of the group.')
 
@@ -337,7 +135,6 @@ async def send_for_index(bot, message):
             return await message.reply('Make sure I am an admin in the chat and have permission to invite users.')
     else:
         link = f"@{message.forward_from_chat.username}"
-    
     buttons = [
         [InlineKeyboardButton('Accept Index', callback_data=f'index#accept#{chat_id}#{last_msg_id}#{message.from_user.id}')],
         [InlineKeyboardButton('Reject Index', callback_data=f'index#reject#{chat_id}#{message.id}#{message.from_user.id}')]
@@ -367,6 +164,7 @@ async def set_file_filters(bot, message):
     if ' ' in message.text:
         _, filter_text = message.text.split(" ", 1)
         extensions = [ext.strip().lower() for ext in filter_text.split(',')]
+        # Add dots if missing
         extensions = [ext if ext.startswith('.') else f'.{ext}' for ext in extensions]
         
         temp.FILE_FILTERS = set(extensions)
@@ -386,28 +184,17 @@ async def clear_file_filters(bot, message):
 
 @Client.on_message(filters.command('autoindex') & filters.user(ADMINS))
 async def manage_auto_index(bot, message):
-    """Enable/disable auto-indexing for channels with private mode support"""
+    """Enable/disable auto-indexing for channels"""
     if len(message.command) < 2:
-        config = await load_auto_index_config()
+        config = load_auto_index_config()
         if not config:
-            return await message.reply(
-                "📋 No auto-indexing channels configured.\n\n"
-                "💡 Usage:\n"
-                "• Enable: `/autoindex enable @channel`\n"
-                "• Enable Private: `/autoindex enable @channel private`\n"
-                "• Disable: `/autoindex disable @channel`\n"
-                "• Set Filters: `/autoindex setfilters @channel .mp4,.mkv`\n"
-                "• Clear Filters: `/autoindex clearfilters @channel`\n"
-                "• List: `/autoindex list`"
-            )
+            return await message.reply("📋 No auto-indexing channels configured.\n\n💡 Usage:\n• Enable: `/autoindex enable @channel`\n• Disable: `/autoindex disable @channel`\n• List: `/autoindex list`")
         
         text = "🤖 Auto-indexing Status:\n\n"
         for chat_id, settings in config.items():
             status = "✅ Enabled" if settings.get('enabled', False) else "❌ Disabled"
-            mode = "🔒 Private" if settings.get('private_mode', False) else "🔓 Public"
             filters_info = f" | Filters: {', '.join(settings.get('filters', []))}" if settings.get('filters') else ""
-            last_msg = settings.get('last_indexed_msg', 0)
-            text += f"• <code>{chat_id}</code>\n  {status} | {mode}{filters_info}\n  Last: <code>{last_msg}</code>\n\n"
+            text += f"• <code>{chat_id}</code>: {status}{filters_info}\n"
         
         await message.reply(text)
         return
@@ -415,31 +202,21 @@ async def manage_auto_index(bot, message):
     command = message.command[1].lower()
     
     if command == "list":
-        config = await load_auto_index_config()
+        config = load_auto_index_config()
         if not config:
             return await message.reply("📋 No auto-indexing channels configured.")
         
         text = "🤖 Auto-indexing Channels:\n\n"
         for chat_id, settings in config.items():
             status = "✅ Enabled" if settings.get('enabled', False) else "❌ Disabled"
-            mode = "🔒 Private" if settings.get('private_mode', False) else "🔓 Public"
             filters_info = f" | Filters: {', '.join(settings.get('filters', []))}" if settings.get('filters') else ""
-            last_msg = settings.get('last_indexed_msg', 0)
-            text += f"• <code>{chat_id}</code>\n  {status} | {mode}{filters_info}\n  Last: <code>{last_msg}</code>\n\n"
+            text += f"• <code>{chat_id}</code>: {status}{filters_info}\n"
         
         await message.reply(text)
         return
     
     if len(message.command) < 3:
-        return await message.reply(
-            "💡 Usage:\n"
-            "• Enable: `/autoindex enable @channel`\n"
-            "• Enable Private: `/autoindex enable @channel private`\n"
-            "• Disable: `/autoindex disable @channel`\n"
-            "• Set Filters: `/autoindex setfilters @channel .mp4,.mkv`\n"
-            "• Clear Filters: `/autoindex clearfilters @channel`\n"
-            "• List: `/autoindex list`"
-        )
+        return await message.reply("💡 Usage:\n• Enable: `/autoindex enable @channel`\n• Disable: `/autoindex disable @channel`\n• List: `/autoindex list`")
     
     chat_identifier = message.command[2]
     
@@ -449,86 +226,38 @@ async def manage_auto_index(bot, message):
     except Exception as e:
         return await message.reply(f"❌ Error getting chat info: {e}")
     
-    config = await load_auto_index_config()
+    config = load_auto_index_config()
     
     if command == "enable":
-        private_mode = len(message.command) > 3 and message.command[3].lower() == "private"
-        
-        settings = {
-            'chat_id': int(chat_id),
-            'enabled': True,
-            'chat_title': chat.title or chat.username,
-            'private_mode': private_mode,
-            'filters': config.get(chat_id, {}).get('filters', []),
-            'last_indexed_msg': config.get(chat_id, {}).get('last_indexed_msg', 0)
-        }
-        
-        await save_auto_index_config(chat_id, settings)
-        mode_text = "🔒 Private Mode" if private_mode else "🔓 Public Mode"
-        await message.reply(
-            f"✅ Auto-indexing enabled for {chat.title or chat.username} (<code>{chat_id}</code>)\n"
-            f"Mode: {mode_text}\n\n"
-            f"{'⚠️ Note: Private mode will index new messages only, not historical messages.' if private_mode else ''}"
-        )
+        if chat_id not in config:
+            config[chat_id] = {}
+        config[chat_id]['enabled'] = True
+        config[chat_id]['chat_title'] = chat.title or chat.username
+        save_auto_index_config(config)
+        await message.reply(f"✅ Auto-indexing enabled for {chat.title or chat.username} (<code>{chat_id}</code>)")
         
     elif command == "disable":
         if chat_id in config:
-            await delete_auto_index_config(chat_id)
-            await message.reply(f"❌ Auto-indexing disabled and removed for {chat.title or chat.username} (<code>{chat_id}</code>)")
+            config[chat_id]['enabled'] = False
+            save_auto_index_config(config)
+            await message.reply(f"❌ Auto-indexing disabled for {chat.title or chat.username} (<code>{chat_id}</code>)")
         else:
             await message.reply("❌ This channel is not in auto-index list.")
-    
-    elif command == "setfilters":
-        if len(message.command) < 4:
-            return await message.reply("💡 Usage: `/autoindex setfilters @channel .mp4,.mkv,.srt`")
-        
-        filter_text = message.command[3]
-        extensions = [ext.strip().lower() for ext in filter_text.split(',')]
-        extensions = [ext if ext.startswith('.') else f'.{ext}' for ext in extensions]
-        
-        if chat_id not in config:
-            return await message.reply("❌ This channel is not in auto-index list. Enable it first.")
-        
-        settings = config[chat_id]
-        settings['filters'] = extensions
-        settings['chat_id'] = int(chat_id)
-        await save_auto_index_config(chat_id, settings)
-        
-        await message.reply(f"✅ Filters set for {chat.title or chat.username}: {', '.join(extensions)}")
-    
-    elif command == "clearfilters":
-        if chat_id not in config:
-            return await message.reply("❌ This channel is not in auto-index list.")
-        
-        settings = config[chat_id]
-        settings['filters'] = []
-        settings['chat_id'] = int(chat_id)
-        await save_auto_index_config(chat_id, settings)
-        
-        await message.reply(f"✅ Filters cleared for {chat.title or chat.username}")
-    
     else:
-        await message.reply(
-            "💡 Usage:\n"
-            "• Enable: `/autoindex enable @channel`\n"
-            "• Enable Private: `/autoindex enable @channel private`\n"
-            "• Disable: `/autoindex disable @channel`\n"
-            "• Set Filters: `/autoindex setfilters @channel .mp4,.mkv`\n"
-            "• Clear Filters: `/autoindex clearfilters @channel`\n"
-            "• List: `/autoindex list`"
-        )
+        await message.reply("💡 Usage:\n• Enable: `/autoindex enable @channel`\n• Disable: `/autoindex disable @channel`\n• List: `/autoindex list`")
 
 # Auto-indexing handler for new messages in monitored channels
 @Client.on_message(filters.channel & ~filters.service)
 async def auto_index_new_files(bot, message):
     """Automatically index new files from monitored channels"""
     try:
-        config = await load_auto_index_config()
+        config = load_auto_index_config()
         chat_id = str(message.chat.id)
         
         if chat_id not in config or not config[chat_id].get('enabled', False):
             return
         
+        # Check if message has media
         if not message.media:
             return
         
@@ -539,6 +268,7 @@ async def auto_index_new_files(bot, message):
         if not media:
             return
         
+        # Apply file filters if set
         channel_filters = set(config[chat_id].get('filters', []))
         global_filters = getattr(temp, 'FILE_FILTERS', set())
         file_filters = channel_filters or global_filters
@@ -546,29 +276,24 @@ async def auto_index_new_files(bot, message):
         if file_filters and not should_index_file(media, file_filters):
             return
         
+        # Set media properties for saving
         media.file_type = message.media.value
         media.caption = message.caption
         
+        # Save the file
         try:
             ok, code = await save_file(media)
             if ok:
                 LOGGER.info(f"Auto-indexed file: {getattr(media, 'file_name', 'Unknown')} from {message.chat.title}")
-                
-                settings = config[chat_id]
-                settings['last_indexed_msg'] = message.id
-                settings['chat_id'] = int(chat_id)
-                await save_auto_index_config(chat_id, settings)
-                
+                # Optional: Send notification to log channel
                 if LOG_CHANNEL:
                     try:
-                        mode_icon = "🔒" if config[chat_id].get('private_mode', False) else "🔓"
                         await bot.send_message(
                             LOG_CHANNEL,
                             f"🤖 Auto-indexed file:\n"
                             f"📁 File: <code>{getattr(media, 'file_name', 'Unknown')}</code>\n"
                             f"📺 Channel: {message.chat.title} (<code>{chat_id}</code>)\n"
-                            f"🆔 Message ID: <code>{message.id}</code>\n"
-                            f"Mode: {mode_icon}"
+                            f"🆔 Message ID: <code>{message.id}</code>"
                         )
                     except:
                         pass
@@ -592,10 +317,11 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     deleted = 0
     no_media = 0
     unsupported = 0
-    filtered_out = 0
+    filtered_out = 0  # New counter for filtered files
     BATCH_SIZE = 200
     start_time = time.time()
 
+    # Get current file filters
     file_filters = getattr(temp, 'FILE_FILTERS', set())
 
     async with lock:
